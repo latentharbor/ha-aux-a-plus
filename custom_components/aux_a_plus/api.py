@@ -153,9 +153,12 @@ class AuxAPlusApi:
             "dst": 1,
             "type": "app",
             "deviceId": self.device_id,
+            "did": self.device_id,
         }
         if v2:
             payload["needControl"] = True
+        else:
+            payload["needControl"] = False
         if self.uid:
             payload["uid"] = self.uid
         if self.nickname:

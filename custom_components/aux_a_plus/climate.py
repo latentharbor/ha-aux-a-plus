@@ -237,11 +237,13 @@ class AuxAPlusClimate(ClimateEntity):
 
     def turn_on(self) -> None:
         self.api.control({"on_off": 1}, v2=True)
-        self.update()
+        self._state["on_off"] = 1
+        self._available = True
 
     def turn_off(self) -> None:
         self.api.control({"on_off": 0}, v2=True)
-        self.update()
+        self._state["on_off"] = 0
+        self._available = True
 
     def set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
