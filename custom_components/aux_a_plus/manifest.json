@@ -1,7 +1,7 @@
 {
   "domain": "aux_a_plus",
   "name": "AUX A+ Air Conditioner",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "documentation": "https://github.com/latentharbor/ha-aux-a-plus",
   "issue_tracker": "https://github.com/latentharbor/ha-aux-a-plus/issues",
   "requirements": [
