@@ -81,14 +81,14 @@ class AuxAPlusApi:
         _LOGGER.debug("AUX A+ login: %s", url)
         resp = self.session.post(url, json=payload, headers=self._headers(auth=False, json_content=True), timeout=self.timeout)
         data = self._json_or_raise(resp)
-        if data.get("code") != 200:
-            raise AuxAPlusApiError(f"Login failed: {data}")
+        if not self._is_success(data):
+            raise AuxAPlusApiError(f"Login failed: {self._summarize_response(data)}")
         root = data.get("data") or {}
         user = root.get("appUser") or {}
         token_info = root.get("openApiToken") or {}
-        token = token_info.get("token")
+        token = token_info.get("token") or root.get("token") or data.get("token")
         if not token:
-            raise AuxAPlusApiError(f"Login succeeded but token missing: {data}")
+            raise AuxAPlusApiError(f"Login succeeded but token missing: {self._summarize_response(data)}")
         self.token = token
         self.token_expire_at = int(token_info.get("expireAt") or 0)
         self.uid = user.get("uid")
@@ -107,17 +107,17 @@ class AuxAPlusApi:
         params = {"configId": self.config_id, "getStatus": "1"}
         resp = self.session.get(url, params=params, headers=self._headers(auth=True), timeout=self.timeout)
         data = self._json_or_raise(resp)
-        if data.get("code") != 200:
+        if not self._is_success(data):
             # Token may have been invalidated by another login.
-            _LOGGER.debug("AUX A+ device list failed once, retrying login: %s", data)
+            _LOGGER.debug("AUX A+ device list failed once, retrying login: %s", self._summarize_response(data))
             self.login()
             resp = self.session.get(url, params=params, headers=self._headers(auth=True), timeout=self.timeout)
             data = self._json_or_raise(resp)
-        if data.get("code") != 200:
-            raise AuxAPlusApiError(f"Device list failed: {data}")
-        devices = data.get("data") or []
+        if not self._is_success(data):
+            raise AuxAPlusApiError(f"Device list failed: {self._summarize_response(data)}")
+        devices = self._extract_device_list(data)
         if not isinstance(devices, list):
-            raise AuxAPlusApiError(f"Device list returned unexpected payload: {data}")
+            raise AuxAPlusApiError(f"Device list returned unexpected payload: {self._summarize_response(data)}")
         return devices
 
     def get_device(self) -> dict[str, Any]:
@@ -146,9 +146,9 @@ class AuxAPlusApi:
         _LOGGER.debug("AUX A+ control %s payload=%s", path, payload)
         resp = self.session.post(url, json=payload, headers=self._headers(auth=True, json_content=True), timeout=self.timeout)
         data = self._json_or_raise(resp)
-        if data.get("code") not in (0, 200, None):
+        if not self._is_success(data, allow_missing_code=True):
             # Some AUX control endpoints return code/message, some may return empty-ish success.
-            _LOGGER.warning("AUX A+ control returned non-200 response: %s", data)
+            _LOGGER.warning("AUX A+ control returned non-200 response: %s", self._summarize_response(data))
         return data
 
     @staticmethod
@@ -160,3 +160,36 @@ class AuxAPlusApi:
         if resp.status_code >= 400:
             raise AuxAPlusApiError(f"HTTP {resp.status_code}: {data}")
         return data
+
+    @staticmethod
+    def _is_success(data: dict[str, Any], *, allow_missing_code: bool = False) -> bool:
+        code = data.get("code")
+        if code is None:
+            return allow_missing_code
+        return str(code) in {"0", "200"}
+
+    @staticmethod
+    def _extract_device_list(data: dict[str, Any]) -> Any:
+        root = data.get("data") or []
+        if isinstance(root, list):
+            return root
+        if isinstance(root, dict):
+            for key in ("list", "records", "rows", "devices", "deviceBindings"):
+                value = root.get(key)
+                if isinstance(value, list):
+                    return value
+        return root
+
+    @staticmethod
+    def _summarize_response(data: dict[str, Any]) -> dict[str, Any]:
+        """Return enough response detail for logs without leaking tokens."""
+        summary: dict[str, Any] = {}
+        for key in ("code", "msg", "message", "error", "error_description"):
+            if key in data:
+                summary[key] = data[key]
+        root = data.get("data")
+        if isinstance(root, dict):
+            summary["data_keys"] = sorted(root.keys())
+        elif isinstance(root, list):
+            summary["data_len"] = len(root)
+        return summary or {"keys": sorted(data.keys())}
