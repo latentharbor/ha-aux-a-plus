@@ -65,11 +65,11 @@ class AuxAPlusValueSensor(SensorEntity):
             "manufacturer": "AUX / 奥克斯",
         }
         if kind == "indoor_temperature":
-            self._attr_name = "室内温度"
+            self._attr_name = "温度"
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
             self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         else:
-            self._attr_name = "室内湿度"
+            self._attr_name = "湿度"
             self._attr_device_class = SensorDeviceClass.HUMIDITY
             self._attr_native_unit_of_measurement = PERCENTAGE
         self._available = False
@@ -108,6 +108,7 @@ class AuxAPlusValueSensor(SensorEntity):
                 state,
                 device,
                 (
+                    "outdoorTemperature",
                     "room_temperature",
                     "indoor_temperature",
                     "indoor_temp",
@@ -119,6 +120,7 @@ class AuxAPlusValueSensor(SensorEntity):
             state,
             device,
             (
+                "outdoorHumidity",
                 "room_humidity",
                 "indoor_humidity",
                 "indoorHumidity",
@@ -129,11 +131,14 @@ class AuxAPlusValueSensor(SensorEntity):
 
     @staticmethod
     def _first_present(state: dict[str, Any], device: dict[str, Any], keys: tuple[str, ...]) -> Any:
+        environment_data = device.get("environmentData") or state.get("environmentData") or {}
         for key in keys:
             if key in state and state[key] not in (None, ""):
                 return state[key]
             if key in device and device[key] not in (None, ""):
                 return device[key]
+            if isinstance(environment_data, dict) and key in environment_data and environment_data[key] not in (None, ""):
+                return environment_data[key]
         return None
 
     @staticmethod
