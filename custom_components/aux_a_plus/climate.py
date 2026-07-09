@@ -187,6 +187,16 @@ class AuxAPlusClimate(ClimateEntity):
             return None
 
     @property
+    def current_temperature(self) -> float | None:
+        for key in ("room_temperature", "indoor_temperature", "indoor_temp", "room_temp"):
+            temp = self._state.get(key)
+            if temp is not None:
+                return self._as_float(temp)
+        # Captured AUX A+ traffic exposes room temperature as top-level dataOne
+        # when feature.roomTempDisplay is enabled.
+        return self._as_float(self._device.get("dataOne"))
+
+    @property
     def fan_mode(self) -> str | None:
         # Captured status uses wind_speed_1; captured control sends wind_speed.
         code = self._state.get("wind_speed_1", self._state.get("wind_speed"))
@@ -256,3 +266,12 @@ class AuxAPlusClimate(ClimateEntity):
             raise ValueError(f"Unsupported AUX A+ swing mode: {swing_mode}")
         self.api.control({"up_down_swing": code}, v2=False)
         self.update()
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

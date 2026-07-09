@@ -36,5 +36,12 @@
         }
       }
     }
+  },
+  "entity": {
+    "switch": {
+      "left_right_swing": {
+        "name": "Left/right swing"
+      }
+    }
   }
 }
