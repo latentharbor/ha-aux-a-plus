@@ -46,28 +46,38 @@ MODE_TO_HVAC = {
 HVAC_TO_MODE = {value: key for key, value in MODE_TO_HVAC.items()}
 
 FAN_TO_CODE = {
-    "low": 0,
-    "medium": 1,
-    "high": 2,
-    "quiet": 3,
-    "auto": 4,
-    "turbo": 5,
-    "medium low": 6,
-    "medium high": 7,
+    "低": 0,
+    "中": 1,
+    "高": 2,
+    "静音": 3,
+    "自动": 4,
+    "强力": 5,
 }
-CODE_TO_FAN = {value: key for key, value in FAN_TO_CODE.items()}
+CODE_TO_FAN = {
+    0: "低",
+    1: "中",
+    2: "高",
+    3: "静音",
+    4: "自动",
+    5: "强力",
+    6: "低",
+    7: "高",
+}
 
 SWING_TO_CODE = {
-    "auto up/down": 0,
-    "position 1": 1,
-    "position 2": 2,
-    "position 3": 3,
-    "position 4": 4,
-    "position 5": 5,
-    "position 6": 6,
-    "off": 7,
+    "自动": 0,
+    "关闭": 7,
 }
-CODE_TO_SWING = {value: key for key, value in SWING_TO_CODE.items()}
+CODE_TO_SWING = {
+    0: "自动",
+    1: "固定",
+    2: "固定",
+    3: "固定",
+    4: "固定",
+    5: "固定",
+    6: "固定",
+    7: "关闭",
+}
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -131,7 +141,7 @@ class AuxAPlusClimate(ClimateEntity):
         HVACMode.FAN_ONLY,
     ]
     _attr_fan_modes = list(FAN_TO_CODE.keys())
-    _attr_swing_modes = list(SWING_TO_CODE.keys())
+    _attr_swing_modes = ["自动", "固定", "关闭"]
 
     def __init__(self, api: AuxAPlusApi, name: str, device_id: str) -> None:
         self.api = api
@@ -155,7 +165,6 @@ class AuxAPlusClimate(ClimateEntity):
             "sleep_mode": self._state.get("sleep_mode"),
             "left_right_swing": self._state.get("left_right_swing"),
             "screen_on_off": self._state.get("screen_on_off"),
-            "raw_state": self._state,
         }
 
     @property
@@ -261,6 +270,11 @@ class AuxAPlusClimate(ClimateEntity):
         self.update()
 
     def set_swing_mode(self, swing_mode: str) -> None:
+        if swing_mode == "固定":
+            # Home Assistant exposes one swing selector, while AUX supports six
+            # fixed vane positions. Keep the UI tidy and leave the current fixed
+            # position unchanged if the user chooses the display-only state.
+            return
         code = SWING_TO_CODE.get(swing_mode)
         if code is None:
             raise ValueError(f"Unsupported AUX A+ swing mode: {swing_mode}")
