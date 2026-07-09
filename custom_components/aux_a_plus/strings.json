@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AUX A+ Air Conditioner",
+        "description": "Log in with the phone number and password configured in the AUX A+ app. The default config ID was captured from your AUX A+ traffic.",
+        "data": {
+          "username": "AUX A+ phone number",
+          "password": "AUX A+ password",
+          "config_id": "Config ID",
+          "public_key_base64": "RSA public key"
+        }
+      },
+      "select_device": {
+        "title": "Select AUX A+ device",
+        "data": {
+          "device_id": "Device"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect or log in to AUX A+.",
+      "no_devices": "No devices were returned by the AUX A+ account.",
+      "device_not_found": "The selected device was not found.",
+      "unknown": "Unexpected error. Check Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This AUX A+ device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AUX A+ options",
+        "data": {
+          "name": "Display name"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "奥克斯 A+ 空调",
+        "description": "使用你在奥克斯 A+ App 里设置的手机号和密码登录。Config ID 已按本次抓包预填。",
+        "data": {
+          "username": "奥克斯 A+ 手机号",
+          "password": "奥克斯 A+ 登录密码",
+          "config_id": "Config ID",
+          "public_key_base64": "RSA 公钥"
+        }
+      },
+      "select_device": {
+        "title": "选择奥克斯 A+ 设备",
+        "data": {
+          "device_id": "设备"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接或登录奥克斯 A+。",
+      "no_devices": "这个奥克斯 A+ 账号没有返回设备。",
+      "device_not_found": "没有找到选择的设备。",
+      "unknown": "未知错误，请查看 Home Assistant 日志。"
+    },
+    "abort": {
+      "already_configured": "这个奥克斯 A+ 设备已经配置过。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "奥克斯 A+ 选项",
+        "data": {
+          "name": "显示名称"
+        }
+      }
+    }
+  }
+}
