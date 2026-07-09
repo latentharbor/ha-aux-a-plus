@@ -69,8 +69,26 @@ class AuxAPlusApi:
         encrypted = cipher.encrypt(self.password.encode("utf-8"))
         return base64.b64encode(encrypted).decode("ascii")
 
+    def get_public_key(self) -> str:
+        """Fetch the current login public key.
+
+        AUX expires login public keys, so using a key captured from old traffic can
+        fail with code 64033 ("public key expired").
+        """
+        url = f"{BASE_URL}/app/auth/getPubkey"
+        _LOGGER.debug("AUX A+ get public key: %s", url)
+        resp = self.session.get(url, headers=self._headers(auth=False), timeout=self.timeout)
+        data = self._json_or_raise(resp)
+        if not self._is_success(data):
+            raise AuxAPlusApiError(f"Get public key failed: {self._summarize_response(data)}")
+        public_key = data.get("data")
+        if not isinstance(public_key, str) or not public_key:
+            raise AuxAPlusApiError(f"Get public key returned unexpected payload: {self._summarize_response(data)}")
+        return public_key
+
     def login(self) -> None:
         ts = self._now_ms()
+        self.public_key_base64 = self.get_public_key()
         payload = {
             "password": self._encrypt_password(ts),
             "account": self.account,

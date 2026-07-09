@@ -80,7 +80,6 @@ class AuxAPlusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_USERNAME): str,
                 vol.Required(CONF_PASSWORD): str,
                 vol.Optional(CONF_CONFIG_ID, default=DEFAULT_CONFIG_ID): str,
-                vol.Optional(CONF_PUBLIC_KEY, default=DEFAULT_PUBLIC_KEY_BASE64): str,
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)

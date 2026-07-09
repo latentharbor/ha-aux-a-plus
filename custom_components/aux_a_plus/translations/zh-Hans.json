@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "奥克斯 A+ 空调",
-        "description": "使用你在奥克斯 A+ App 里设置的手机号和密码登录。Config ID 已按本次抓包预填。",
+        "description": "使用你在奥克斯 A+ App 里设置的手机号和密码登录。登录公钥会自动获取。",
         "data": {
           "username": "奥克斯 A+ 手机号",
           "password": "奥克斯 A+ 登录密码",
-          "config_id": "Config ID",
-          "public_key_base64": "RSA 公钥"
+          "config_id": "Config ID"
         }
       },
       "select_device": {

@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "AUX A+ Air Conditioner",
-        "description": "Log in with the phone number and password configured in the AUX A+ app. The default config ID was captured from your AUX A+ traffic.",
+        "description": "Log in with the phone number and password configured in the AUX A+ app. The login public key is fetched automatically.",
         "data": {
           "username": "AUX A+ phone number",
           "password": "AUX A+ password",
-          "config_id": "Config ID",
-          "public_key_base64": "RSA public key"
+          "config_id": "Config ID"
         }
       },
       "select_device": {
