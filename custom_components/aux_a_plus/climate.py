@@ -9,9 +9,17 @@ import voluptuous as vol
 
 from homeassistant.components.climate import ClimateEntity, PLATFORM_SCHEMA
 try:
-    from homeassistant.components.climate import ClimateEntityFeature, HVACMode
+    from homeassistant.components.climate import (
+        ClimateEntityFeature,
+        HVACAction,
+        HVACMode,
+    )
 except ImportError:  # Older/newer HA compatibility
-    from homeassistant.components.climate.const import ClimateEntityFeature, HVACMode
+    from homeassistant.components.climate.const import (
+        ClimateEntityFeature,
+        HVACAction,
+        HVACMode,
+    )
 from homeassistant.const import (
     ATTR_TEMPERATURE,
     CONF_NAME,
@@ -46,37 +54,27 @@ MODE_TO_HVAC = {
 HVAC_TO_MODE = {value: key for key, value in MODE_TO_HVAC.items()}
 
 FAN_TO_CODE = {
-    "静音": 0,
-    "低": 1,
-    "中": 2,
-    "高": 4,
-    "强力": 5,
+    "silent": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 4,
+    "turbo": 5,
 }
 CODE_TO_FAN = {
-    0: "静音",
-    1: "低",
-    2: "中",
-    3: "高",
-    4: "高",
-    5: "强力",
-    6: "低",
-    7: "高",
+    0: "silent",
+    1: "low",
+    2: "medium",
+    3: "high",
+    4: "high",
+    5: "turbo",
+    6: "low",
+    7: "high",
 }
 
-SWING_TO_CODE = {
-    "自动": 0,
-    "关闭": 7,
-}
-CODE_TO_SWING = {
-    0: "自动",
-    1: "固定",
-    2: "固定",
-    3: "固定",
-    4: "固定",
-    5: "固定",
-    6: "固定",
-    7: "关闭",
-}
+SWING_OFF = "off"
+SWING_VERTICAL = "vertical"
+SWING_HORIZONTAL = "horizontal"
+SWING_BOTH = "both"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -134,7 +132,8 @@ class AuxAPlusClimate(ClimateEntity):
         HVACMode.FAN_ONLY,
     ]
     _attr_fan_modes = list(FAN_TO_CODE.keys())
-    _attr_swing_modes = ["自动", "固定", "关闭"]
+    # Matter FanControl.RockSetting uses these canonical direction names.
+    _attr_swing_modes = [SWING_OFF, SWING_VERTICAL, SWING_HORIZONTAL, SWING_BOTH]
 
     def __init__(self, api: AuxAPlusApi, name: str, device_id: str) -> None:
         self.api = api
@@ -176,7 +175,33 @@ class AuxAPlusClimate(ClimateEntity):
     def hvac_mode(self) -> HVACMode:
         if int(self._state.get("on_off", 0) or 0) == 0:
             return HVACMode.OFF
-        return MODE_TO_HVAC.get(int(self._state.get("air_con_func", 1) or 1), HVACMode.COOL)
+        return MODE_TO_HVAC.get(
+            int(self._state.get("air_con_func", 1) or 1), HVACMode.COOL
+        )
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        mode = self.hvac_mode
+        if mode == HVACMode.OFF:
+            return HVACAction.OFF
+        if mode == HVACMode.DRY:
+            return HVACAction.DRYING
+        if mode == HVACMode.FAN_ONLY:
+            return HVACAction.FAN
+
+        current = self.current_temperature
+        target = self.target_temperature
+        if mode == HVACMode.COOL:
+            if current is not None and target is not None and current <= target:
+                return HVACAction.IDLE
+            return HVACAction.COOLING
+        if mode == HVACMode.HEAT:
+            if current is not None and target is not None and current >= target:
+                return HVACAction.IDLE
+            return HVACAction.HEATING
+        if current is None or target is None or current == target:
+            return HVACAction.IDLE
+        return HVACAction.COOLING if current > target else HVACAction.HEATING
 
     @property
     def target_temperature(self) -> float | None:
@@ -210,11 +235,17 @@ class AuxAPlusClimate(ClimateEntity):
 
     @property
     def swing_mode(self) -> str | None:
-        code = self._state.get("up_down_swing")
-        try:
-            return CODE_TO_SWING.get(int(code))
-        except (TypeError, ValueError):
+        vertical = self._swing_is_active(self._state.get("up_down_swing"))
+        horizontal = self._swing_is_active(self._state.get("left_right_swing"))
+        if vertical is None or horizontal is None:
             return None
+        if vertical and horizontal:
+            return SWING_BOTH
+        if vertical:
+            return SWING_VERTICAL
+        if horizontal:
+            return SWING_HORIZONTAL
+        return SWING_OFF
 
     def update(self) -> None:
         try:
@@ -246,36 +277,62 @@ class AuxAPlusClimate(ClimateEntity):
             return
         if self.hvac_mode == HVACMode.OFF:
             self.api.control({"on_off": 1}, v2=True)
+            self._state["on_off"] = 1
         mode = HVAC_TO_MODE.get(hvac_mode)
         if mode is not None:
             self.api.control({"air_con_func": mode}, v2=False)
-        self.update()
+            self._state["air_con_func"] = mode
+        self._available = True
 
     def set_temperature(self, **kwargs: Any) -> None:
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
-        self.api.control({"temperature": int(round(float(temperature) * 10))}, v2=False)
-        self.update()
+        target = float(temperature)
+        self.api.control({"temperature": int(round(target * 10))}, v2=False)
+        whole = int(target)
+        self._state["temperature"] = whole
+        self._state["temperature_decimal"] = int(round((target - whole) * 10))
+        self._available = True
 
     def set_fan_mode(self, fan_mode: str) -> None:
+        if fan_mode == "off":
+            self.turn_off()
+            return
+        if fan_mode == "on":
+            self.turn_on()
+            return
         code = FAN_TO_CODE.get(fan_mode)
         if code is None:
             raise ValueError(f"Unsupported AUX A+ fan mode: {fan_mode}")
         self.api.control({"wind_speed": code}, v2=False)
-        self.update()
+        self._state["wind_speed_1"] = code
+        self._available = True
 
     def set_swing_mode(self, swing_mode: str) -> None:
-        if swing_mode == "固定":
-            # Home Assistant exposes one swing selector, while AUX supports six
-            # fixed vane positions. Keep the UI tidy and leave the current fixed
-            # position unchanged if the user chooses the display-only state.
-            return
-        code = SWING_TO_CODE.get(swing_mode)
-        if code is None:
+        if swing_mode not in self._attr_swing_modes:
             raise ValueError(f"Unsupported AUX A+ swing mode: {swing_mode}")
-        self.api.control({"up_down_swing": code}, v2=False)
-        self.update()
+        vertical_code = 0 if swing_mode in (SWING_VERTICAL, SWING_BOTH) else 7
+        horizontal_code = 0 if swing_mode in (SWING_HORIZONTAL, SWING_BOTH) else 7
+        self.api.control(
+            {
+                "up_down_swing": vertical_code,
+                "left_right_swing": horizontal_code,
+            },
+            v2=False,
+        )
+        self._state["up_down_swing"] = vertical_code
+        self._state["left_right_swing"] = horizontal_code
+        self._available = True
+
+    @staticmethod
+    def _swing_is_active(value: Any) -> bool | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value) != 7
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _as_float(value: Any) -> float | None:

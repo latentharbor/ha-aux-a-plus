@@ -20,7 +20,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -75,7 +75,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if entity_id is not None:
                 registry.async_remove(entity_id)
 
-        hass.config_entries.async_update_entry(entry, version=3)
+    if entry.version < 4:
+        unique_id = f"aux_a_plus_{device_id}_left_right_swing"
+        entity_id = registry.async_get_entity_id("switch", DOMAIN, unique_id)
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
+        hass.config_entries.async_update_entry(entry, version=4)
 
     return True
 

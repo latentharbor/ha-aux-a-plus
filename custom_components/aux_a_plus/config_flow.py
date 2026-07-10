@@ -27,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 class AuxAPlusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle an AUX A+ config flow."""
 
-    VERSION = 3
+    VERSION = 4
 
     def __init__(self) -> None:
         self._account_data: dict[str, Any] = {}

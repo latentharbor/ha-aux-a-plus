@@ -255,11 +255,26 @@ class AuxAPlusApi:
             payload["nickName"] = self.nickname
         url = f"{BASE_URL}{path}"
         _LOGGER.debug("AUX A+ control %s payload=%s", path, payload)
-        resp = self.session.post(url, json=payload, headers=self._headers(auth=True, json_content=True), timeout=self.timeout)
+        resp = self.session.post(
+            url,
+            json=payload,
+            headers=self._headers(auth=True, json_content=True),
+            timeout=self.timeout,
+        )
         data = self._json_or_raise(resp)
         if not self._is_success(data, allow_missing_code=True):
-            # Some AUX control endpoints return code/message, some may return empty-ish success.
-            _LOGGER.warning("AUX A+ control returned non-200 response: %s", self._summarize_response(data))
+            self.login()
+            resp = self.session.post(
+                url,
+                json=payload,
+                headers=self._headers(auth=True, json_content=True),
+                timeout=self.timeout,
+            )
+            data = self._json_or_raise(resp)
+        if not self._is_success(data, allow_missing_code=True):
+            raise AuxAPlusApiError(
+                f"Control failed: {self._summarize_response(data)}"
+            )
         return data
 
     @staticmethod
