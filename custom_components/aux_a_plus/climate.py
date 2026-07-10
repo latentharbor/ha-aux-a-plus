@@ -285,12 +285,13 @@ class AuxAPlusClimate(ClimateEntity):
         if hvac_mode == HVACMode.OFF:
             self.turn_off()
             return
-        if self.hvac_mode == HVACMode.OFF:
-            self.api.control({"on_off": 1}, v2=True)
-            self._state["on_off"] = 1
         mode = HVAC_TO_MODE.get(hvac_mode)
         if mode is not None:
-            self.api.control({"air_con_func": mode}, v2=False)
+            intent = {"air_con_func": mode}
+            if self.hvac_mode == HVACMode.OFF:
+                intent["on_off"] = 1
+            self.api.control(intent, v2=False)
+            self._state["on_off"] = 1
             self._state["air_con_func"] = mode
         self._available = True
 

@@ -18,6 +18,7 @@ This integration was built for newer AUX A+ modules that use:
 - Real indoor temperature from the air conditioner's AUXLink status packet
 - Fan modes: low, medium, high, quiet, auto, turbo, medium low, medium high
 - Up/down swing modes
+- Low-latency AUXLink MQTT control with automatic HTTP fallback
 - Cloud polling through the AUX A+ HTTP and MQTT APIs
 
 ## Installation with HACS custom repository

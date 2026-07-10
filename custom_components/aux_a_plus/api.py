@@ -12,7 +12,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from .const import APP_VERSION, BASE_URL, DEFAULT_PUBLIC_KEY_BASE64, OS_VERSION, USER_AGENT
-from .mqtt import AuxMqttAuthError, AuxMqttError, query_temperatures
+from .mqtt import AuxMqttAuthError, AuxMqttError, control_device, query_temperatures
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -180,9 +180,57 @@ class AuxAPlusApi:
 
     def control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         with self._request_lock:
-            result = self._control(intent, v2=v2)
+            try:
+                result = self._control_mqtt(intent)
+            except AuxMqttError as err:
+                _LOGGER.warning(
+                    "AUX MQTT control failed; falling back to HTTP control: %s", err
+                )
+                if "on_off" in intent and len(intent) > 1:
+                    self._control({"on_off": intent["on_off"]}, v2=True)
+                    remaining = {
+                        key: value
+                        for key, value in intent.items()
+                        if key != "on_off"
+                    }
+                    result = self._control(remaining, v2=False)
+                else:
+                    result = self._control(intent, v2=v2)
             self._force_device_refresh = True
             return result
+
+    def _control_mqtt(self, intent: dict[str, Any]) -> dict[str, Any]:
+        self.ensure_login()
+        if not self.uid or not self.token:
+            raise AuxAPlusApiError("Login succeeded but MQTT credentials are missing")
+
+        self._mqtt_sequence = (self._mqtt_sequence + 2) & 0xFFFF
+        try:
+            control_device(
+                uid=str(self.uid),
+                token=self.token,
+                device_id=self.device_id,
+                app_id=self.config_id,
+                sequence=self._mqtt_sequence,
+                intent=intent,
+                timeout=self.timeout,
+            )
+        except AuxMqttAuthError:
+            self.login()
+            if not self.uid or not self.token:
+                raise AuxAPlusApiError(
+                    "Login succeeded but MQTT credentials are missing"
+                )
+            control_device(
+                uid=str(self.uid),
+                token=self.token,
+                device_id=self.device_id,
+                app_id=self.config_id,
+                sequence=self._mqtt_sequence,
+                intent=intent,
+                timeout=self.timeout,
+            )
+        return {"code": 200, "message": "MQTT control acknowledged"}
 
     def get_daily_electricity(self) -> dict[str, Any]:
         """Return today's runtime and electricity consumption."""
