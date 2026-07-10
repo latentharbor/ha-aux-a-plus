@@ -1,7 +1,7 @@
 {
   "domain": "aux_a_plus",
   "name": "AUX A+ Air Conditioner",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "documentation": "https://github.com/latentharbor/ha-aux-a-plus",
   "issue_tracker": "https://github.com/latentharbor/ha-aux-a-plus/issues",
   "requirements": [
@@ -10,6 +10,6 @@
     "requests>=2.31.0"
   ],
   "codeowners": [],
-  "iot_class": "cloud_push",
+  "iot_class": "local_polling",
   "config_flow": true
 }

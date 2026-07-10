@@ -32,7 +32,8 @@
       "init": {
         "title": "AUX A+ options",
         "data": {
-          "name": "Display name"
+          "name": "Display name",
+          "host": "Local IP address (optional)"
         }
       }
     }

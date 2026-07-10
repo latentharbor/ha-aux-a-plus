@@ -16,12 +16,13 @@ This integration was built for newer AUX A+ modules that use:
 - HVAC modes: Auto, Cool, Dry, Heat, Fan only
 - Target temperature
 - Real indoor temperature from the air conditioner's AUXLink status packet
-- Fan modes: low, medium, high, quiet, auto, turbo, medium low, medium high
-- Up/down swing modes
-- Low-latency AUXLink MQTT control with automatic HTTP fallback
+- Fan modes: quiet, low, medium, high, turbo
+- Up/down and left/right swing modes
+- Direct encrypted AUXLink LAN state and control
+- Automatic cloud MQTT and HTTP fallback when LAN is unavailable
 - Optimistic state reconciliation to prevent stale cloud status rollbacks
-- Persistent MQTT state subscription for immediate remote and app updates
-- Persistent MQTT cloud push with HTTP polling only for energy data
+- Persistent LAN or MQTT state connection for immediate updates
+- HTTP polling only for authentication, metadata, and energy data
 
 ## Installation with HACS custom repository
 
@@ -34,6 +35,9 @@ This integration was built for newer AUX A+ modules that use:
 7. Restart Home Assistant.
 8. Go to **Settings → Devices & services → Add integration**.
 9. Search for **AUX A+** and log in with your AUX A+ phone number and password.
+10. Open the integration's **Configure** dialog and enter the air conditioner's
+    local IP address to enable reliable LAN control. Reserve this address in
+    your router's DHCP settings.
 
 ## Repository layout
 
@@ -45,6 +49,7 @@ custom_components/
     climate.py
     config_flow.py
     const.py
+    lan.py
     manifest.json
     mqtt.py
     strings.json
@@ -59,6 +64,9 @@ README.md
 - This is not the older BroadLink/AC Freedom MQTT integration.
 - This is not the older `old_device_control` AUX component.
 - If login fails, verify that you can log into the AUX A+ app with a password, not only SMS verification.
+- The integration matches the device by MAC when the Linux ARP cache contains a
+  newer DHCP address. A DHCP reservation is still recommended for predictable
+  LAN startup after Home Assistant restarts.
 - Do not commit your phone number, password, token, cookies, or packet-capture files to GitHub.
 
 ## Debug logging

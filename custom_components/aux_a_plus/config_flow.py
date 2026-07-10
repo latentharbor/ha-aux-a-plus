@@ -14,6 +14,7 @@ from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
     CONF_CONFIG_ID,
     CONF_DEVICE_ID,
+    CONF_HOST,
     CONF_PUBLIC_KEY,
     DEFAULT_CONFIG_ID,
     DEFAULT_NAME,
@@ -140,10 +141,20 @@ class AuxAPlusOptionsFlow(config_entries.OptionsFlow):
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        """Allow adjusting display name."""
+        """Allow adjusting display name and local host."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        name = self.config_entry.options.get(CONF_NAME, self.config_entry.data.get(CONF_NAME, DEFAULT_NAME))
-        schema = vol.Schema({vol.Optional(CONF_NAME, default=name): str})
+        name = self.config_entry.options.get(
+            CONF_NAME, self.config_entry.data.get(CONF_NAME, DEFAULT_NAME)
+        )
+        host = self.config_entry.options.get(
+            CONF_HOST, self.config_entry.data.get(CONF_HOST, "")
+        )
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_NAME, default=name): str,
+                vol.Optional(CONF_HOST, default=host): str,
+            }
+        )
         return self.async_show_form(step_id="init", data_schema=schema)

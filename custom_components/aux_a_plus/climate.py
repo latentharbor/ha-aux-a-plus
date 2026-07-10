@@ -34,6 +34,7 @@ from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
     CONF_CONFIG_ID,
     CONF_DEVICE_ID,
+    CONF_HOST,
     CONF_PUBLIC_KEY,
     DEFAULT_CONFIG_ID,
     DEFAULT_NAME,
@@ -82,6 +83,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Required(CONF_USERNAME): cv.string,
         vol.Required(CONF_PASSWORD): cv.string,
         vol.Required(CONF_DEVICE_ID): cv.string,
+        vol.Optional(CONF_HOST): cv.string,
         vol.Optional(CONF_CONFIG_ID, default=DEFAULT_CONFIG_ID): cv.string,
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_PUBLIC_KEY, default=DEFAULT_PUBLIC_KEY_BASE64): cv.string,
@@ -96,6 +98,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         password=config[CONF_PASSWORD],
         device_id=config[CONF_DEVICE_ID],
         config_id=config[CONF_CONFIG_ID],
+        host=config.get(CONF_HOST),
         public_key_base64=config[CONF_PUBLIC_KEY],
     )
     add_entities([AuxAPlusClimate(api, config[CONF_NAME], config[CONF_DEVICE_ID])], True)
@@ -147,7 +150,7 @@ class AuxAPlusClimate(ClimateEntity):
         self._temperatures: dict[str, float] = {}
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to live MQTT state changes."""
+        """Subscribe to live LAN or MQTT state changes."""
         await super().async_added_to_hass()
         self.async_on_remove(self.api.add_state_listener(self._mqtt_state_updated))
 

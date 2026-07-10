@@ -12,6 +12,7 @@ from .api import AuxAPlusApi
 from .const import (
     CONF_CONFIG_ID,
     CONF_DEVICE_ID,
+    CONF_HOST,
     CONF_PUBLIC_KEY,
     DEFAULT_CONFIG_ID,
     DEFAULT_PUBLIC_KEY_BASE64,
@@ -36,10 +37,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         password=data[CONF_PASSWORD],
         device_id=data[CONF_DEVICE_ID],
         config_id=data.get(CONF_CONFIG_ID, DEFAULT_CONFIG_ID),
+        host=entry.options.get(CONF_HOST, data.get(CONF_HOST)) or None,
         public_key_base64=data.get(CONF_PUBLIC_KEY, DEFAULT_PUBLIC_KEY_BASE64),
     )
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the integration after an option changes."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

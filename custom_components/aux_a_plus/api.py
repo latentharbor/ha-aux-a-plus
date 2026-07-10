@@ -12,6 +12,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from .const import APP_VERSION, BASE_URL, DEFAULT_PUBLIC_KEY_BASE64, OS_VERSION, USER_AGENT
+from .lan import AuxLanClient, AuxLanError
 from .mqtt import AuxMqttAuthError, AuxMqttClient, AuxMqttError
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class AuxAPlusApi:
         password: str,
         device_id: str,
         config_id: str,
+        host: str | None = None,
         public_key_base64: str = DEFAULT_PUBLIC_KEY_BASE64,
         timeout: int = 12,
     ) -> None:
@@ -41,6 +43,7 @@ class AuxAPlusApi:
         self.password = password
         self.device_id = device_id
         self.config_id = config_id
+        self.host = host
         self.public_key_base64 = public_key_base64
         self.timeout = timeout
         self.session = requests.Session()
@@ -59,6 +62,12 @@ class AuxAPlusApi:
         self._cached_temperatures: dict[str, float] | None = None
         self._temperature_cache_at = 0.0
         self._mqtt_sequence = 0
+        self._lan_client = AuxLanClient(
+            device_id=self.device_id,
+            host=self.host,
+            timeout=self.timeout,
+            on_update=self._apply_lan_update,
+        )
         self._mqtt_client: AuxMqttClient | None = None
         self._mqtt_state: dict[str, Any] = {}
         self._metadata_refresh_at = 0.0
@@ -164,7 +173,7 @@ class AuxAPlusApi:
         return devices
 
     def get_device(self) -> dict[str, Any]:
-        """Return device metadata merged with the live MQTT state."""
+        """Return device metadata merged with the live LAN or MQTT state."""
         with self._request_lock:
             now = time.monotonic()
             try:
@@ -174,14 +183,32 @@ class AuxAPlusApi:
                 ):
                     self._refresh_device_metadata(now)
 
-                mqtt_state, _temperatures = self._mqtt_snapshot()
-                if not mqtt_state:
-                    client = self._request_mqtt_status(wait=True)
-                else:
-                    client = self._ensure_mqtt_client()
-                mqtt_state, _temperatures = self._mqtt_snapshot()
-                if mqtt_state and now - client.last_state_at >= 30:
-                    self._request_mqtt_status(wait=False)
+                transport_connected = False
+                try:
+                    lan_state, _temperatures = self._lan_client.snapshot()
+                    if not lan_state:
+                        self._lan_client.request_status(wait=True)
+                    else:
+                        self._lan_client.start()
+                    lan_state, _temperatures = self._lan_client.snapshot()
+                    if lan_state and now - self._lan_client.last_state_at >= 10:
+                        self._lan_client.request_status(wait=False)
+                    if not lan_state or not self._lan_client.connected:
+                        raise AuxLanError("AUX LAN has no live state")
+                    transport_connected = True
+                except AuxLanError as err:
+                    _LOGGER.debug("AUX LAN unavailable; using cloud MQTT: %s", err)
+                    mqtt_state, _temperatures = self._mqtt_snapshot()
+                    if not mqtt_state:
+                        client = self._request_mqtt_status(wait=True)
+                    else:
+                        client = self._ensure_mqtt_client()
+                    mqtt_state, _temperatures = self._mqtt_snapshot()
+                    if mqtt_state and now - client.last_state_at >= 30:
+                        self._request_mqtt_status(wait=False)
+                    transport_connected = client.connected
+
+                live_state, _temperatures = self._mqtt_snapshot()
 
                 if self._cached_device is None:
                     raise AuxAPlusApiError(f"Device {self.device_id} metadata unavailable")
@@ -189,15 +216,15 @@ class AuxAPlusApi:
                 if not isinstance(state, dict):
                     state = {}
                     self._cached_device["data"] = state
-                state.update(mqtt_state)
+                state.update(live_state)
                 self._merge_pending_control_state(self._cached_device, now)
-                self._cached_device["online"] = client.connected
+                self._cached_device["online"] = transport_connected
                 self._device_cache_at = now
                 return self._cached_device
-            except (AuxAPlusApiError, AuxMqttError):
+            except (AuxAPlusApiError, AuxLanError, AuxMqttError):
                 if self._cached_device is not None and now - self._device_cache_at < 300:
                     _LOGGER.warning(
-                        "AUX MQTT state refresh failed; using the last successful state"
+                        "AUX state refresh failed; using the last successful state"
                     )
                     return self._cached_device
                 raise
@@ -206,6 +233,13 @@ class AuxAPlusApi:
         for device in self.list_devices():
             if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
                 self._cached_device = device
+                mac = device.get("mac")
+                passcode = device.get("password") or device.get("passcode")
+                if mac and passcode:
+                    try:
+                        self._lan_client.configure_credentials(mac, passcode)
+                    except AuxLanError as err:
+                        _LOGGER.debug("AUX LAN credentials unavailable: %s", err)
                 self._metadata_refresh_at = now
                 self._device_last_attempt_at = now
                 return
@@ -225,22 +259,29 @@ class AuxAPlusApi:
                 return {"code": 200, "message": "Duplicate control suppressed"}
 
             try:
-                result = self._control_mqtt(intent)
-            except AuxMqttError as err:
-                _LOGGER.warning(
-                    "AUX MQTT control failed; falling back to HTTP control: %s", err
+                result = self._control_lan(intent)
+            except AuxLanError as lan_err:
+                _LOGGER.debug(
+                    "AUX LAN control unavailable; using cloud MQTT: %s", lan_err
                 )
-                if "on_off" in intent and len(intent) > 1:
-                    self._control({"on_off": intent["on_off"]}, v2=True)
-                    remaining = {
-                        key: value
-                        for key, value in intent.items()
-                        if key != "on_off"
-                    }
-                    result = self._control(remaining, v2=False)
-                else:
-                    result = self._control(intent, v2=v2)
-                self._record_control_state(intent, now)
+                try:
+                    result = self._control_mqtt(intent)
+                except AuxMqttError as err:
+                    _LOGGER.warning(
+                        "AUX MQTT control failed; falling back to HTTP control: %s",
+                        err,
+                    )
+                    if "on_off" in intent and len(intent) > 1:
+                        self._control({"on_off": intent["on_off"]}, v2=True)
+                        remaining = {
+                            key: value
+                            for key, value in intent.items()
+                            if key != "on_off"
+                        }
+                        result = self._control(remaining, v2=False)
+                    else:
+                        result = self._control(intent, v2=v2)
+                    self._record_control_state(intent, now)
             self._last_control_intent = dict(intent)
             self._last_control_at = now
             return result
@@ -359,6 +400,10 @@ class AuxAPlusApi:
             self._ensure_mqtt_client().control(intent)
         return {"code": 200, "message": "MQTT control acknowledged"}
 
+    def _control_lan(self, intent: dict[str, Any]) -> dict[str, Any]:
+        self._lan_client.control(intent)
+        return {"code": 200, "message": "LAN control acknowledged"}
+
     def get_daily_electricity(self) -> dict[str, Any]:
         """Return today's runtime and electricity consumption."""
         with self._request_lock:
@@ -414,9 +459,20 @@ class AuxAPlusApi:
                 raise
 
     def get_realtime_temperatures(self) -> dict[str, float]:
-        """Return temperatures from the persistent AUX MQTT state channel."""
+        """Return temperatures from the persistent AUX LAN or MQTT channel."""
         with self._request_lock:
             now = time.monotonic()
+            try:
+                _lan_state, lan_temperatures = self._lan_client.snapshot()
+                if self._lan_client.connected:
+                    if not lan_temperatures or now - self._temperature_cache_at >= 10:
+                        self._lan_client.request_status(wait=True)
+                    _lan_state, lan_temperatures = self._lan_client.snapshot()
+                    if lan_temperatures:
+                        return lan_temperatures
+            except AuxLanError as err:
+                _LOGGER.debug("AUX LAN temperature unavailable: %s", err)
+
             try:
                 _state, temperatures = self._mqtt_snapshot()
                 if not temperatures:
@@ -479,7 +535,19 @@ class AuxAPlusApi:
             on_update=self._apply_mqtt_update,
         )
 
+    def _apply_lan_update(
+        self, state: dict[str, object], temperatures: dict[str, float]
+    ) -> None:
+        self._apply_transport_update(state, temperatures)
+
     def _apply_mqtt_update(
+        self, state: dict[str, object], temperatures: dict[str, float]
+    ) -> None:
+        if self._lan_client.connected:
+            state = {}
+        self._apply_transport_update(state, temperatures)
+
+    def _apply_transport_update(
         self, state: dict[str, object], temperatures: dict[str, float]
     ) -> None:
         with self._mqtt_state_lock:
@@ -512,6 +580,7 @@ class AuxAPlusApi:
             self._mqtt_client = None
         with self._mqtt_state_lock:
             self._state_listeners.clear()
+        self._lan_client.close()
         if client is not None:
             client.close()
 

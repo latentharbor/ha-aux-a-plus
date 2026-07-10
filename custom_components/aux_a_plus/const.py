@@ -8,6 +8,7 @@ OS_VERSION = "iOS 27.0"
 
 CONF_CONFIG_ID = "config_id"
 CONF_DEVICE_ID = "device_id"
+CONF_HOST = "host"
 CONF_PUBLIC_KEY = "public_key_base64"
 
 DEFAULT_NAME = "AUX A+ AC"
