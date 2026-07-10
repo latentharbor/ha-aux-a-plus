@@ -16,6 +16,7 @@ This integration was built for newer AUX A+ modules that use:
 - HVAC modes: Auto, Cool, Dry, Heat, Fan only
 - Target temperature
 - Real indoor temperature from the air conditioner's AUXLink status packet
+- Separate Home Assistant indoor temperature sensor entity
 - Fan modes: quiet, low, medium, high, turbo
 - Up/down and left/right swing modes
 - Direct encrypted AUXLink LAN state and control

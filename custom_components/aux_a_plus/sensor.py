@@ -10,7 +10,13 @@ try:
     from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 except ImportError:  # Older HA compatibility
     from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
-from homeassistant.const import CONF_NAME, UnitOfEnergy, UnitOfTime
+from homeassistant.const import (
+    CONF_NAME,
+    UnitOfEnergy,
+    UnitOfTemperature,
+    UnitOfTime,
+)
+from homeassistant.core import callback
 
 from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
@@ -31,11 +37,77 @@ async def async_setup_entry(hass, entry, async_add_entities):
     api = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
+            AuxAPlusTemperatureSensor(api, name, data[CONF_DEVICE_ID]),
             AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_runtime"),
             AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_energy"),
         ],
         True,
     )
+
+
+class AuxAPlusTemperatureSensor(SensorEntity):
+    """Expose the indoor temperature reported by the air conditioner."""
+
+    _attr_has_entity_name = True
+    _attr_name = "室内温度"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_object_id = "aux_indoor_temperature"
+
+    def __init__(self, api: AuxAPlusApi, name: str, device_id: str) -> None:
+        self.api = api
+        self._attr_unique_id = f"aux_a_plus_{device_id}_indoor_temperature"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"aux_a_plus_{device_id}")},
+            "name": name,
+            "manufacturer": "AUX / 奥克斯",
+        }
+        self._available = False
+        self._value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to live temperature updates."""
+        await super().async_added_to_hass()
+        self.async_on_remove(self.api.add_state_listener(self._state_updated))
+
+    def _state_updated(self) -> None:
+        self.hass.loop.call_soon_threadsafe(self._schedule_update)
+
+    @callback
+    def _schedule_update(self) -> None:
+        self.schedule_update_ha_state(force_refresh=True)
+
+    @property
+    def available(self) -> bool:
+        return self._available and self._value is not None
+
+    @property
+    def native_value(self) -> float | None:
+        return self._value
+
+    def update(self) -> None:
+        try:
+            temperatures = self.api.get_realtime_temperatures()
+            self._value = self._as_float(temperatures.get("indoor_temperature"))
+            self._available = self._value is not None
+        except AuxAPlusApiError as err:
+            self._available = False
+            _LOGGER.warning("AUX A+ indoor temperature update failed: %s", err)
+        except Exception as err:  # noqa: BLE001
+            self._available = False
+            _LOGGER.exception(
+                "Unexpected AUX A+ indoor temperature update error: %s", err
+            )
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class AuxAPlusDailySensor(SensorEntity):
