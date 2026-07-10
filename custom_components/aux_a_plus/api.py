@@ -48,6 +48,8 @@ class AuxAPlusApi:
         self._device_cache_at = 0.0
         self._device_last_attempt_at = 0.0
         self._force_device_refresh = False
+        self._cached_daily_electricity: dict[str, Any] | None = None
+        self._daily_electricity_cache_at = 0.0
 
     def _now_ms(self) -> str:
         return str(int(time.time() * 1000))
@@ -177,6 +179,60 @@ class AuxAPlusApi:
             result = self._control(intent, v2=v2)
             self._force_device_refresh = True
             return result
+
+    def get_daily_electricity(self) -> dict[str, Any]:
+        """Return today's runtime and electricity consumption."""
+        with self._request_lock:
+            now = time.monotonic()
+            if (
+                self._cached_daily_electricity is not None
+                and now - self._daily_electricity_cache_at < 50
+            ):
+                return self._cached_daily_electricity
+
+            try:
+                self.ensure_login()
+                url = f"{BASE_URL}/app/daily/electricity"
+                params = {"deviceId": self.device_id}
+                resp = self.session.get(
+                    url,
+                    params=params,
+                    headers=self._headers(auth=True),
+                    timeout=self.timeout,
+                )
+                data = self._json_or_raise(resp)
+                if not self._is_success(data):
+                    self.login()
+                    resp = self.session.get(
+                        url,
+                        params=params,
+                        headers=self._headers(auth=True),
+                        timeout=self.timeout,
+                    )
+                    data = self._json_or_raise(resp)
+                if not self._is_success(data):
+                    raise AuxAPlusApiError(
+                        f"Daily electricity failed: {self._summarize_response(data)}"
+                    )
+                result = data.get("data")
+                if not isinstance(result, dict):
+                    raise AuxAPlusApiError(
+                        "Daily electricity returned unexpected payload: "
+                        f"{self._summarize_response(data)}"
+                    )
+                self._cached_daily_electricity = result
+                self._daily_electricity_cache_at = now
+                return result
+            except AuxAPlusApiError:
+                if (
+                    self._cached_daily_electricity is not None
+                    and now - self._daily_electricity_cache_at < 300
+                ):
+                    _LOGGER.warning(
+                        "AUX A+ daily electricity refresh failed; using the last successful data"
+                    )
+                    return self._cached_daily_electricity
+                raise
 
     def _control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         """Send a control command while the caller holds the request lock."""

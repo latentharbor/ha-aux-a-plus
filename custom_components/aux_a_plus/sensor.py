@@ -10,7 +10,7 @@ try:
     from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 except ImportError:  # Older HA compatibility
     from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
-from homeassistant.const import CONF_NAME, PERCENTAGE, UnitOfTemperature
+from homeassistant.const import CONF_NAME, UnitOfEnergy, UnitOfTime
 
 from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
@@ -21,7 +21,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=30)
+SCAN_INTERVAL = timedelta(seconds=60)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -31,18 +31,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
     api = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
-            AuxAPlusValueSensor(api, name, data[CONF_DEVICE_ID], "indoor_temperature"),
-            AuxAPlusValueSensor(api, name, data[CONF_DEVICE_ID], "indoor_humidity"),
+            AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_runtime"),
+            AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_energy"),
         ],
         True,
     )
 
 
-class AuxAPlusValueSensor(SensorEntity):
-    """Expose measured AUX A+ values as separate Home Assistant sensors."""
+class AuxAPlusDailySensor(SensorEntity):
+    """Expose daily AUX A+ usage values."""
 
     _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, api: AuxAPlusApi, name: str, device_id: str, kind: str) -> None:
         self.api = api
@@ -54,16 +53,20 @@ class AuxAPlusValueSensor(SensorEntity):
             "name": name,
             "manufacturer": "AUX / 奥克斯",
         }
-        if kind == "indoor_temperature":
-            self._attr_name = "温度"
-            self._attr_suggested_object_id = "aux_temperature"
-            self._attr_device_class = SensorDeviceClass.TEMPERATURE
-            self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+        if kind == "today_runtime":
+            self._attr_name = "今日运行时间"
+            self._attr_suggested_object_id = "aux_today_runtime"
+            self._attr_device_class = SensorDeviceClass.DURATION
+            self._attr_native_unit_of_measurement = UnitOfTime.HOURS
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._api_key = "todayUseTime"
         else:
-            self._attr_name = "湿度"
-            self._attr_suggested_object_id = "aux_humidity"
-            self._attr_device_class = SensorDeviceClass.HUMIDITY
-            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_name = "今日耗电量"
+            self._attr_suggested_object_id = "aux_today_energy"
+            self._attr_device_class = SensorDeviceClass.ENERGY
+            self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+            self._api_key = "todayElectricityConsumption"
         self._available = False
         self._value: float | None = None
         self._raw: Any = None
@@ -82,56 +85,16 @@ class AuxAPlusValueSensor(SensorEntity):
 
     def update(self) -> None:
         try:
-            device = self.api.get_device()
-            state = device.get("data") or {}
-            self._raw = self._extract_raw_value(device, state)
+            daily = self.api.get_daily_electricity()
+            self._raw = daily.get(self._api_key)
             self._value = self._as_float(self._raw)
-            self._available = bool(device.get("online", True))
+            self._available = True
         except AuxAPlusApiError as err:
             self._available = False
             _LOGGER.warning("AUX A+ %s sensor update failed: %s", self.kind, err)
         except Exception as err:  # noqa: BLE001
             self._available = False
             _LOGGER.exception("Unexpected AUX A+ %s sensor update error: %s", self.kind, err)
-
-    def _extract_raw_value(self, device: dict[str, Any], state: dict[str, Any]) -> Any:
-        if self.kind == "indoor_temperature":
-            return self._first_present(
-                state,
-                device,
-                (
-                    "outdoorTemperature",
-                    "room_temperature",
-                    "indoor_temperature",
-                    "indoor_temp",
-                    "room_temp",
-                    "dataOne",
-                ),
-            )
-        return self._first_present(
-            state,
-            device,
-            (
-                "outdoorHumidity",
-                "room_humidity",
-                "indoor_humidity",
-                "indoorHumidity",
-                "humidity",
-                "relative_humidity",
-            ),
-        )
-
-    @staticmethod
-    def _first_present(state: dict[str, Any], device: dict[str, Any], keys: tuple[str, ...]) -> Any:
-        environment_data = device.get("environmentData") or state.get("environmentData") or {}
-        for key in keys:
-            if key in state and state[key] not in (None, ""):
-                return state[key]
-            if key in device and device[key] not in (None, ""):
-                return device[key]
-            if isinstance(environment_data, dict) and key in environment_data and environment_data[key] not in (None, ""):
-                return environment_data[key]
-        return None
 
     @staticmethod
     def _as_float(value: Any) -> float | None:

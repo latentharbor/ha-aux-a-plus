@@ -44,13 +44,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate existing entities to concise AUX entity IDs."""
+    device_id = entry.data[CONF_DEVICE_ID]
+    registry = er.async_get(hass)
+
     if entry.version < 2:
-        device_id = entry.data[CONF_DEVICE_ID]
-        registry = er.async_get(hass)
         entity_ids = {
             ("climate", f"aux_a_plus_{device_id}"): "climate.aux",
-            ("sensor", f"aux_a_plus_{device_id}_indoor_temperature"): "sensor.aux_temperature",
-            ("sensor", f"aux_a_plus_{device_id}_indoor_humidity"): "sensor.aux_humidity",
             ("switch", f"aux_a_plus_{device_id}_left_right_swing"): "switch.aux_left_right_swing",
         }
 
@@ -67,7 +66,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 continue
             registry.async_update_entity(current_entity_id, new_entity_id=target_entity_id)
 
-        hass.config_entries.async_update_entry(entry, version=2)
+    if entry.version < 3:
+        for unique_id in (
+            f"aux_a_plus_{device_id}_indoor_temperature",
+            f"aux_a_plus_{device_id}_indoor_humidity",
+        ):
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+            if entity_id is not None:
+                registry.async_remove(entity_id)
+
+        hass.config_entries.async_update_entry(entry, version=3)
 
     return True
 
