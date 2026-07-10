@@ -10,16 +10,12 @@ try:
     from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 except ImportError:  # Older HA compatibility
     from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
-from homeassistant.const import CONF_NAME, CONF_PASSWORD, CONF_USERNAME, PERCENTAGE, UnitOfTemperature
+from homeassistant.const import CONF_NAME, PERCENTAGE, UnitOfTemperature
 
 from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
-    CONF_CONFIG_ID,
     CONF_DEVICE_ID,
-    CONF_PUBLIC_KEY,
-    DEFAULT_CONFIG_ID,
     DEFAULT_NAME,
-    DEFAULT_PUBLIC_KEY_BASE64,
     DOMAIN,
 )
 
@@ -32,13 +28,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up AUX A+ sensors from a config entry."""
     data = entry.data
     name = entry.options.get(CONF_NAME, data.get(CONF_NAME, DEFAULT_NAME))
-    api = AuxAPlusApi(
-        account=data[CONF_USERNAME],
-        password=data[CONF_PASSWORD],
-        device_id=data[CONF_DEVICE_ID],
-        config_id=data.get(CONF_CONFIG_ID, DEFAULT_CONFIG_ID),
-        public_key_base64=data.get(CONF_PUBLIC_KEY, DEFAULT_PUBLIC_KEY_BASE64),
-    )
+    api = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             AuxAPlusValueSensor(api, name, data[CONF_DEVICE_ID], "indoor_temperature"),

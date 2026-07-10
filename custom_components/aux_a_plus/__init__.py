@@ -4,11 +4,19 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .const import CONF_DEVICE_ID, DOMAIN
+from .api import AuxAPlusApi
+from .const import (
+    CONF_CONFIG_ID,
+    CONF_DEVICE_ID,
+    CONF_PUBLIC_KEY,
+    DEFAULT_CONFIG_ID,
+    DEFAULT_PUBLIC_KEY_BASE64,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,7 +30,14 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AUX A+ from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    data = entry.data
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = AuxAPlusApi(
+        account=data[CONF_USERNAME],
+        password=data[CONF_PASSWORD],
+        device_id=data[CONF_DEVICE_ID],
+        config_id=data.get(CONF_CONFIG_ID, DEFAULT_CONFIG_ID),
+        public_key_base64=data.get(CONF_PUBLIC_KEY, DEFAULT_PUBLIC_KEY_BASE64),
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -59,4 +74,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an AUX A+ config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+    return unloaded

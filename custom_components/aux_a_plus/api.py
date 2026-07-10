@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 import time
 from typing import Any
 
@@ -42,6 +43,11 @@ class AuxAPlusApi:
         self.token_expire_at: int = 0
         self.uid: str | None = None
         self.nickname: str | None = None
+        self._request_lock = threading.RLock()
+        self._cached_device: dict[str, Any] | None = None
+        self._device_cache_at = 0.0
+        self._device_last_attempt_at = 0.0
+        self._force_device_refresh = False
 
     def _now_ms(self) -> str:
         return str(int(time.time() * 1000))
@@ -140,12 +146,40 @@ class AuxAPlusApi:
 
     def get_device(self) -> dict[str, Any]:
         """Return the configured device from the device bindings endpoint."""
-        for device in self.list_devices():
-            if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
-                return device
-        raise AuxAPlusApiError(f"Device {self.device_id} not found in device_bindings")
+        with self._request_lock:
+            now = time.monotonic()
+            if (
+                self._cached_device is not None
+                and not self._force_device_refresh
+                and now - self._device_last_attempt_at < 20
+            ):
+                return self._cached_device
+
+            self._device_last_attempt_at = now
+            try:
+                for device in self.list_devices():
+                    if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
+                        self._cached_device = device
+                        self._device_cache_at = now
+                        self._force_device_refresh = False
+                        return device
+                raise AuxAPlusApiError(f"Device {self.device_id} not found in device_bindings")
+            except AuxAPlusApiError:
+                # Keep entities stable through brief AUX cloud/token failures.
+                if self._cached_device is not None and now - self._device_cache_at < 300:
+                    self._force_device_refresh = False
+                    _LOGGER.warning("AUX A+ refresh failed; using the last successful device state")
+                    return self._cached_device
+                raise
 
     def control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
+        with self._request_lock:
+            result = self._control(intent, v2=v2)
+            self._force_device_refresh = True
+            return result
+
+    def _control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
+        """Send a control command while the caller holds the request lock."""
         self.ensure_login()
         path = "/app/device/v2/control" if v2 else "/app/device/control"
         payload: dict[str, Any] = {

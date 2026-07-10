@@ -6,16 +6,12 @@ import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import CONF_NAME, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_NAME
 
 from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
-    CONF_CONFIG_ID,
     CONF_DEVICE_ID,
-    CONF_PUBLIC_KEY,
-    DEFAULT_CONFIG_ID,
     DEFAULT_NAME,
-    DEFAULT_PUBLIC_KEY_BASE64,
     DOMAIN,
 )
 
@@ -28,13 +24,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up AUX A+ switches from a config entry."""
     data = entry.data
     name = entry.options.get(CONF_NAME, data.get(CONF_NAME, DEFAULT_NAME))
-    api = AuxAPlusApi(
-        account=data[CONF_USERNAME],
-        password=data[CONF_PASSWORD],
-        device_id=data[CONF_DEVICE_ID],
-        config_id=data.get(CONF_CONFIG_ID, DEFAULT_CONFIG_ID),
-        public_key_base64=data.get(CONF_PUBLIC_KEY, DEFAULT_PUBLIC_KEY_BASE64),
-    )
+    api = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([AuxAPlusLeftRightSwingSwitch(api, name, data[CONF_DEVICE_ID])], True)
 
 
