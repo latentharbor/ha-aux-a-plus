@@ -220,9 +220,7 @@ class AuxAPlusClimate(ClimateEntity):
             temp = self._state.get(key)
             if temp is not None:
                 return self._as_float(temp)
-        # Captured AUX A+ traffic exposes room temperature as top-level dataOne
-        # when feature.roomTempDisplay is enabled.
-        return self._as_float(self._device.get("dataOne"))
+        return None
 
     @property
     def fan_mode(self) -> str | None:
