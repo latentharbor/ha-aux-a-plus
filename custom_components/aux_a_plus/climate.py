@@ -145,6 +145,7 @@ class AuxAPlusClimate(ClimateEntity):
     def __init__(self, api: AuxAPlusApi, name: str, device_id: str) -> None:
         self.api = api
         self._attr_name = name
+        self._attr_suggested_object_id = "aux"
         self._attr_unique_id = f"aux_a_plus_{device_id}"
         self._available = False
         self._device: dict[str, Any] = {}

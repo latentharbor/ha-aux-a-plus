@@ -48,6 +48,7 @@ class AuxAPlusLeftRightSwingSwitch(SwitchEntity):
         self.api = api
         self._device_id = device_id
         self._attr_name = "Left/right swing"
+        self._attr_suggested_object_id = "aux_left_right_swing"
         self._attr_unique_id = f"aux_a_plus_{device_id}_left_right_swing"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, f"aux_a_plus_{device_id}")},
