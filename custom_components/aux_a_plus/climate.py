@@ -209,8 +209,11 @@ class AuxAPlusClimate(ClimateEntity):
         if temp is None:
             return None
         try:
-            # Status uses whole Celsius degrees; control uses Celsius * 10.
-            return float(temp) + float(self._state.get("temperature_decimal", 0) or 0) / 10.0
+            # Captured status uses half=1 for a 0.5 C setpoint.
+            fraction = 0.5 if int(self._state.get("half", 0) or 0) == 1 else 0.0
+            if not fraction:
+                fraction = float(self._state.get("temperature_decimal", 0) or 0) / 10.0
+            return float(temp) + fraction
         except (TypeError, ValueError):
             return None
 
@@ -220,7 +223,9 @@ class AuxAPlusClimate(ClimateEntity):
             temp = self._state.get(key)
             if temp is not None:
                 return self._as_float(temp)
-        return None
+        # In captured A+ traffic, dataOne=21 is rendered by the app as 26.0 C.
+        raw = self._as_float(self._device.get("dataOne"))
+        return raw + 5.0 if raw is not None else None
 
     @property
     def fan_mode(self) -> str | None:
@@ -290,7 +295,9 @@ class AuxAPlusClimate(ClimateEntity):
         self.api.control({"temperature": int(round(target * 10))}, v2=False)
         whole = int(target)
         self._state["temperature"] = whole
-        self._state["temperature_decimal"] = int(round((target - whole) * 10))
+        fraction = int(round((target - whole) * 10))
+        self._state["half"] = 1 if fraction == 5 else 0
+        self._state["temperature_decimal"] = fraction
         self._available = True
 
     def set_fan_mode(self, fan_mode: str) -> None:
