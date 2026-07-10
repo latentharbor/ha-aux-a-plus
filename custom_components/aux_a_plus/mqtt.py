@@ -42,40 +42,68 @@ def query_temperatures(
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
 
-    try:
-        with socket.create_connection(
-            (MQTT_HOST, MQTT_PORT), timeout=timeout
-        ) as raw_socket:
-            with context.wrap_socket(
-                raw_socket, server_hostname=MQTT_HOST
-            ) as mqtt_socket:
-                _verify_server_certificate(mqtt_socket)
-                mqtt_socket.settimeout(timeout)
-                _mqtt_connect(mqtt_socket, uid=uid, token=token, app_id=app_id)
-                _mqtt_subscribe(mqtt_socket, f"dev2app/{uid}/#")
+    for attempt in range(2):
+        try:
+            return _query_temperatures_once(
+                context=context,
+                uid=uid,
+                token=token,
+                device_id=device_id,
+                app_id=app_id,
+                sequence=sequence,
+                timeout=timeout,
+            )
+        except AuxMqttError:
+            raise
+        except (OSError, ssl.SSLError, TimeoutError) as err:
+            if attempt == 1:
+                raise AuxMqttError(f"AUX MQTT connection failed: {err}") from err
+            time.sleep(0.5)
 
-                # AUX's native SDK publishes to this literal topic, including '#'.
-                # General MQTT libraries reject it, so this small client writes the
-                # MQTT 3.1 packet directly for protocol compatibility.
-                query = _auxlink_frame(_BIG_STATUS_QUERY, sequence)
-                publish_body = _mqtt_utf8(f"app2dev/{device_id}/#") + query
-                mqtt_socket.sendall(_mqtt_packet(0x30, publish_body))
+    raise AuxMqttError("AUX MQTT connection failed")
 
-                deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    mqtt_socket.settimeout(max(0.1, deadline - time.monotonic()))
-                    packet_type, flags, data = _mqtt_receive(mqtt_socket)
-                    if packet_type != 3:
-                        continue
-                    payload = _mqtt_publish_payload(flags, data)
-                    temperatures = _decode_temperatures(payload)
-                    if temperatures is not None:
-                        return temperatures
-    except AuxMqttError:
-        raise
-    except (OSError, ssl.SSLError, TimeoutError) as err:
-        raise AuxMqttError(f"AUX MQTT connection failed: {err}") from err
+
+def _query_temperatures_once(
+    *,
+    context: ssl.SSLContext,
+    uid: str,
+    token: str,
+    device_id: str,
+    app_id: str,
+    sequence: int,
+    timeout: float,
+) -> dict[str, float]:
+    with socket.create_connection(
+        (MQTT_HOST, MQTT_PORT), timeout=timeout
+    ) as raw_socket:
+        with context.wrap_socket(
+            raw_socket, server_hostname=MQTT_HOST
+        ) as mqtt_socket:
+            _verify_server_certificate(mqtt_socket)
+            mqtt_socket.settimeout(timeout)
+            _mqtt_connect(mqtt_socket, uid=uid, token=token, app_id=app_id)
+            _mqtt_subscribe(mqtt_socket, f"dev2app/{uid}/#")
+
+            # AUX's native SDK publishes to this literal topic, including '#'.
+            # General MQTT libraries reject it, so this small client writes the
+            # MQTT 3.1 packet directly for protocol compatibility.
+            query = _auxlink_frame(_BIG_STATUS_QUERY, sequence)
+            publish_body = _mqtt_utf8(f"app2dev/{device_id}/#") + query
+            mqtt_socket.sendall(_mqtt_packet(0x30, publish_body))
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                mqtt_socket.settimeout(max(0.1, deadline - time.monotonic()))
+                packet_type, flags, data = _mqtt_receive(mqtt_socket)
+                if packet_type != 3:
+                    continue
+                payload = _mqtt_publish_payload(flags, data)
+                temperatures = _decode_temperatures(payload)
+                if temperatures is not None:
+                    return temperatures
 
     raise AuxMqttError("AUX MQTT status query timed out")
 
