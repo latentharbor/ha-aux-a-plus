@@ -143,6 +143,7 @@ class AuxAPlusClimate(ClimateEntity):
         self._available = False
         self._device: dict[str, Any] = {}
         self._state: dict[str, Any] = {}
+        self._temperatures: dict[str, float] = {}
 
     @property
     def available(self) -> bool:
@@ -158,6 +159,7 @@ class AuxAPlusClimate(ClimateEntity):
             "sleep_mode": self._state.get("sleep_mode"),
             "left_right_swing": self._state.get("left_right_swing"),
             "screen_on_off": self._state.get("screen_on_off"),
+            "outdoor_temperature": self._temperatures.get("outdoor_temperature"),
         }
 
     @property
@@ -219,13 +221,14 @@ class AuxAPlusClimate(ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
+        realtime = self._temperatures.get("indoor_temperature")
+        if realtime is not None:
+            return realtime
         for key in ("room_temperature", "indoor_temperature", "indoor_temp", "room_temp"):
             temp = self._state.get(key)
             if temp is not None:
                 return self._as_float(temp)
-        # In captured A+ traffic, dataOne=21 is rendered by the app as 26.0 C.
-        raw = self._as_float(self._device.get("dataOne"))
-        return raw + 5.0 if raw is not None else None
+        return None
 
     @property
     def fan_mode(self) -> str | None:
@@ -255,6 +258,10 @@ class AuxAPlusClimate(ClimateEntity):
             device = self.api.get_device()
             self._device = device
             self._state = device.get("data") or {}
+            try:
+                self._temperatures = self.api.get_realtime_temperatures()
+            except AuxAPlusApiError as err:
+                _LOGGER.warning("AUX A+ temperature update failed: %s", err)
             self._available = bool(device.get("online", True))
             _LOGGER.debug("AUX A+ state updated: %s", self._state)
         except AuxAPlusApiError as err:

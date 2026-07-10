@@ -1,10 +1,11 @@
 {
   "domain": "aux_a_plus",
   "name": "AUX A+ Air Conditioner",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "documentation": "https://github.com/latentharbor/ha-aux-a-plus",
   "issue_tracker": "https://github.com/latentharbor/ha-aux-a-plus/issues",
   "requirements": [
+    "cryptography>=42.0.0",
     "pycryptodome>=3.20.0",
     "requests>=2.31.0"
   ],

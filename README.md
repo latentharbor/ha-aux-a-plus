@@ -15,9 +15,10 @@ This integration was built for newer AUX A+ modules that use:
 - Power on/off
 - HVAC modes: Auto, Cool, Dry, Heat, Fan only
 - Target temperature
+- Real indoor temperature from the air conditioner's AUXLink status packet
 - Fan modes: low, medium, high, quiet, auto, turbo, medium low, medium high
 - Up/down swing modes
-- Cloud polling through the AUX A+ API
+- Cloud polling through the AUX A+ HTTP and MQTT APIs
 
 ## Installation with HACS custom repository
 
@@ -42,6 +43,7 @@ custom_components/
     config_flow.py
     const.py
     manifest.json
+    mqtt.py
     strings.json
     translations/
       zh-Hans.json

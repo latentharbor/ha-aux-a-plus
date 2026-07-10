@@ -12,6 +12,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from .const import APP_VERSION, BASE_URL, DEFAULT_PUBLIC_KEY_BASE64, OS_VERSION, USER_AGENT
+from .mqtt import AuxMqttAuthError, AuxMqttError, query_temperatures
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ class AuxAPlusApi:
         self._force_device_refresh = False
         self._cached_daily_electricity: dict[str, Any] | None = None
         self._daily_electricity_cache_at = 0.0
+        self._cached_temperatures: dict[str, float] | None = None
+        self._temperature_cache_at = 0.0
+        self._mqtt_sequence = 0
 
     def _now_ms(self) -> str:
         return str(int(time.time() * 1000))
@@ -233,6 +237,60 @@ class AuxAPlusApi:
                     )
                     return self._cached_daily_electricity
                 raise
+
+    def get_realtime_temperatures(self) -> dict[str, float]:
+        """Return indoor-unit temperatures from the AUX MQTT status channel."""
+        with self._request_lock:
+            now = time.monotonic()
+            if (
+                self._cached_temperatures is not None
+                and now - self._temperature_cache_at < 25
+            ):
+                return self._cached_temperatures
+
+            try:
+                self.ensure_login()
+                if not self.uid or not self.token:
+                    raise AuxAPlusApiError("Login succeeded but MQTT credentials are missing")
+
+                self._mqtt_sequence = (self._mqtt_sequence + 1) & 0xFFFF
+                try:
+                    result = query_temperatures(
+                        uid=str(self.uid),
+                        token=self.token,
+                        device_id=self.device_id,
+                        app_id=self.config_id,
+                        sequence=self._mqtt_sequence,
+                        timeout=self.timeout,
+                    )
+                except AuxMqttAuthError:
+                    self.login()
+                    if not self.uid or not self.token:
+                        raise AuxAPlusApiError(
+                            "Login succeeded but MQTT credentials are missing"
+                        )
+                    result = query_temperatures(
+                        uid=str(self.uid),
+                        token=self.token,
+                        device_id=self.device_id,
+                        app_id=self.config_id,
+                        sequence=self._mqtt_sequence,
+                        timeout=self.timeout,
+                    )
+
+                self._cached_temperatures = result
+                self._temperature_cache_at = now
+                return result
+            except AuxMqttError as err:
+                if (
+                    self._cached_temperatures is not None
+                    and now - self._temperature_cache_at < 300
+                ):
+                    _LOGGER.warning(
+                        "AUX MQTT temperature refresh failed; using the last successful data"
+                    )
+                    return self._cached_temperatures
+                raise AuxAPlusApiError(str(err)) from err
 
     def _control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         """Send a control command while the caller holds the request lock."""
