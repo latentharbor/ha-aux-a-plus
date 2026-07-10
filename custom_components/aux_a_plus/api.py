@@ -5,19 +5,20 @@ import base64
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from .const import APP_VERSION, BASE_URL, DEFAULT_PUBLIC_KEY_BASE64, OS_VERSION, USER_AGENT
-from .mqtt import AuxMqttAuthError, AuxMqttError, control_device, query_temperatures
+from .mqtt import AuxMqttAuthError, AuxMqttClient, AuxMqttError
 
 _LOGGER = logging.getLogger(__name__)
 
 CONTROL_STATE_GRACE_SECONDS = 90
 CONTROL_DEDUP_SECONDS = 3
+DEVICE_METADATA_REFRESH_SECONDS = 21600
 
 
 class AuxAPlusApiError(Exception):
@@ -48,6 +49,7 @@ class AuxAPlusApi:
         self.uid: str | None = None
         self.nickname: str | None = None
         self._request_lock = threading.RLock()
+        self._mqtt_state_lock = threading.RLock()
         self._cached_device: dict[str, Any] | None = None
         self._device_cache_at = 0.0
         self._device_last_attempt_at = 0.0
@@ -57,6 +59,10 @@ class AuxAPlusApi:
         self._cached_temperatures: dict[str, float] | None = None
         self._temperature_cache_at = 0.0
         self._mqtt_sequence = 0
+        self._mqtt_client: AuxMqttClient | None = None
+        self._mqtt_state: dict[str, Any] = {}
+        self._metadata_refresh_at = 0.0
+        self._state_listeners: set[Callable[[], None]] = set()
         self._pending_control_state: dict[str, Any] = {}
         self._pending_control_until = 0.0
         self._last_control_intent: dict[str, Any] | None = None
@@ -158,33 +164,52 @@ class AuxAPlusApi:
         return devices
 
     def get_device(self) -> dict[str, Any]:
-        """Return the configured device from the device bindings endpoint."""
+        """Return device metadata merged with the live MQTT state."""
         with self._request_lock:
             now = time.monotonic()
-            if (
-                self._cached_device is not None
-                and not self._force_device_refresh
-                and now - self._device_last_attempt_at < 20
-            ):
-                return self._cached_device
-
-            self._device_last_attempt_at = now
             try:
-                for device in self.list_devices():
-                    if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
-                        self._merge_pending_control_state(device, now)
-                        self._cached_device = device
-                        self._device_cache_at = now
-                        self._force_device_refresh = False
-                        return device
-                raise AuxAPlusApiError(f"Device {self.device_id} not found in device_bindings")
-            except AuxAPlusApiError:
-                # Keep entities stable through brief AUX cloud/token failures.
+                if (
+                    self._cached_device is None
+                    or now - self._metadata_refresh_at >= DEVICE_METADATA_REFRESH_SECONDS
+                ):
+                    self._refresh_device_metadata(now)
+
+                mqtt_state, _temperatures = self._mqtt_snapshot()
+                if not mqtt_state:
+                    client = self._request_mqtt_status(wait=True)
+                else:
+                    client = self._ensure_mqtt_client()
+                mqtt_state, _temperatures = self._mqtt_snapshot()
+                if mqtt_state and now - client.last_state_at >= 30:
+                    self._request_mqtt_status(wait=False)
+
+                if self._cached_device is None:
+                    raise AuxAPlusApiError(f"Device {self.device_id} metadata unavailable")
+                state = self._cached_device.get("data")
+                if not isinstance(state, dict):
+                    state = {}
+                    self._cached_device["data"] = state
+                state.update(mqtt_state)
+                self._merge_pending_control_state(self._cached_device, now)
+                self._cached_device["online"] = client.connected
+                self._device_cache_at = now
+                return self._cached_device
+            except (AuxAPlusApiError, AuxMqttError):
                 if self._cached_device is not None and now - self._device_cache_at < 300:
-                    self._force_device_refresh = False
-                    _LOGGER.warning("AUX A+ refresh failed; using the last successful device state")
+                    _LOGGER.warning(
+                        "AUX MQTT state refresh failed; using the last successful state"
+                    )
                     return self._cached_device
                 raise
+
+    def _refresh_device_metadata(self, now: float) -> None:
+        for device in self.list_devices():
+            if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
+                self._cached_device = device
+                self._metadata_refresh_at = now
+                self._device_last_attempt_at = now
+                return
+        raise AuxAPlusApiError(f"Device {self.device_id} not found in device_bindings")
 
     def control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         with self._request_lock:
@@ -215,7 +240,7 @@ class AuxAPlusApi:
                     result = self._control(remaining, v2=False)
                 else:
                     result = self._control(intent, v2=v2)
-            self._record_control_state(intent, now)
+                self._record_control_state(intent, now)
             self._last_control_intent = dict(intent)
             self._last_control_at = now
             return result
@@ -325,36 +350,13 @@ class AuxAPlusApi:
             return actual == expected
 
     def _control_mqtt(self, intent: dict[str, Any]) -> dict[str, Any]:
-        self.ensure_login()
-        if not self.uid or not self.token:
-            raise AuxAPlusApiError("Login succeeded but MQTT credentials are missing")
-
-        self._mqtt_sequence = (self._mqtt_sequence + 2) & 0xFFFF
         try:
-            control_device(
-                uid=str(self.uid),
-                token=self.token,
-                device_id=self.device_id,
-                app_id=self.config_id,
-                sequence=self._mqtt_sequence,
-                intent=intent,
-                timeout=self.timeout,
-            )
+            client = self._ensure_mqtt_client()
+            client.control(intent)
         except AuxMqttAuthError:
             self.login()
-            if not self.uid or not self.token:
-                raise AuxAPlusApiError(
-                    "Login succeeded but MQTT credentials are missing"
-                )
-            control_device(
-                uid=str(self.uid),
-                token=self.token,
-                device_id=self.device_id,
-                app_id=self.config_id,
-                sequence=self._mqtt_sequence,
-                intent=intent,
-                timeout=self.timeout,
-            )
+            self._replace_mqtt_client()
+            self._ensure_mqtt_client().control(intent)
         return {"code": 200, "message": "MQTT control acknowledged"}
 
     def get_daily_electricity(self) -> dict[str, Any]:
@@ -412,48 +414,17 @@ class AuxAPlusApi:
                 raise
 
     def get_realtime_temperatures(self) -> dict[str, float]:
-        """Return indoor-unit temperatures from the AUX MQTT status channel."""
+        """Return temperatures from the persistent AUX MQTT state channel."""
         with self._request_lock:
             now = time.monotonic()
-            if (
-                self._cached_temperatures is not None
-                and now - self._temperature_cache_at < 25
-            ):
-                return self._cached_temperatures
-
             try:
-                self.ensure_login()
-                if not self.uid or not self.token:
-                    raise AuxAPlusApiError("Login succeeded but MQTT credentials are missing")
-
-                self._mqtt_sequence = (self._mqtt_sequence + 1) & 0xFFFF
-                try:
-                    result = query_temperatures(
-                        uid=str(self.uid),
-                        token=self.token,
-                        device_id=self.device_id,
-                        app_id=self.config_id,
-                        sequence=self._mqtt_sequence,
-                        timeout=self.timeout,
-                    )
-                except AuxMqttAuthError:
-                    self.login()
-                    if not self.uid or not self.token:
-                        raise AuxAPlusApiError(
-                            "Login succeeded but MQTT credentials are missing"
-                        )
-                    result = query_temperatures(
-                        uid=str(self.uid),
-                        token=self.token,
-                        device_id=self.device_id,
-                        app_id=self.config_id,
-                        sequence=self._mqtt_sequence,
-                        timeout=self.timeout,
-                    )
-
-                self._cached_temperatures = result
-                self._temperature_cache_at = now
-                return result
+                _state, temperatures = self._mqtt_snapshot()
+                if not temperatures:
+                    self._request_mqtt_status(wait=True)
+                elif now - self._temperature_cache_at >= 60:
+                    self._request_mqtt_status(wait=False)
+                _state, temperatures = self._mqtt_snapshot()
+                return temperatures
             except AuxMqttError as err:
                 if (
                     self._cached_temperatures is not None
@@ -464,6 +435,85 @@ class AuxAPlusApi:
                     )
                     return self._cached_temperatures
                 raise AuxAPlusApiError(str(err)) from err
+
+    def _request_mqtt_status(self, *, wait: bool) -> AuxMqttClient:
+        try:
+            client = self._ensure_mqtt_client()
+            client.request_status(wait=wait)
+            return client
+        except AuxMqttAuthError:
+            self.login()
+            self._replace_mqtt_client()
+            client = self._ensure_mqtt_client()
+            client.request_status(wait=wait)
+            return client
+
+    def _ensure_mqtt_client(self) -> AuxMqttClient:
+        self.ensure_login()
+        if not self.uid or not self.token:
+            raise AuxAPlusApiError("Login succeeded but MQTT credentials are missing")
+        if (
+            self._mqtt_client is None
+            or self._mqtt_client.uid != str(self.uid)
+            or self._mqtt_client.token != self.token
+        ):
+            self._replace_mqtt_client()
+        if self._mqtt_client is None:
+            raise AuxAPlusApiError("Unable to create AUX MQTT client")
+        self._mqtt_client.start()
+        return self._mqtt_client
+
+    def _replace_mqtt_client(self) -> None:
+        old_client = self._mqtt_client
+        self._mqtt_client = None
+        if old_client is not None:
+            old_client.close()
+        if not self.uid or not self.token:
+            return
+        self._mqtt_client = AuxMqttClient(
+            uid=str(self.uid),
+            token=self.token,
+            device_id=self.device_id,
+            app_id=self.config_id,
+            timeout=self.timeout,
+            on_update=self._apply_mqtt_update,
+        )
+
+    def _apply_mqtt_update(
+        self, state: dict[str, object], temperatures: dict[str, float]
+    ) -> None:
+        with self._mqtt_state_lock:
+            if state:
+                self._mqtt_state.update(state)
+            if temperatures:
+                self._cached_temperatures = dict(temperatures)
+                self._temperature_cache_at = time.monotonic()
+            listeners = tuple(self._state_listeners)
+        for listener in listeners:
+            listener()
+
+    def _mqtt_snapshot(self) -> tuple[dict[str, Any], dict[str, float]]:
+        with self._mqtt_state_lock:
+            return dict(self._mqtt_state), dict(self._cached_temperatures or {})
+
+    def add_state_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        with self._mqtt_state_lock:
+            self._state_listeners.add(listener)
+
+        def remove_listener() -> None:
+            with self._mqtt_state_lock:
+                self._state_listeners.discard(listener)
+
+        return remove_listener
+
+    def close(self) -> None:
+        with self._request_lock:
+            client = self._mqtt_client
+            self._mqtt_client = None
+        with self._mqtt_state_lock:
+            self._state_listeners.clear()
+        if client is not None:
+            client.close()
 
     def _control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         """Send a control command while the caller holds the request lock."""

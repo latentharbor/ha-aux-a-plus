@@ -1,12 +1,15 @@
-"""One-shot AUXLink MQTT status queries."""
+"""Persistent and one-shot AUXLink MQTT clients."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import logging
 import socket
 import ssl
 import struct
+import threading
 import time
+from typing import Callable
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -17,6 +20,8 @@ MQTT_HOST = "smthomem2m.aux-home.com"
 MQTT_PORT = 8883
 MQTT_KEEP_ALIVE = 120
 MQTT_INTERMEDIATE_CERT = Path(__file__).with_name("geotrust_g2_cn_2022_ca1.pem")
+
+_LOGGER = logging.getLogger(__name__)
 
 _BIG_STATUS_QUERY = bytes.fromhex("bb0006800000020021011b7e")
 _SMALL_STATUS_QUERY_BODY = b"\x11\x01"
@@ -34,6 +39,13 @@ _FAN_TO_AUX = {
     3: 0x20,
     4: 0x20,
 }
+_AUX_TO_MODE = {value: key for key, value in _MODE_TO_AUX.items()}
+_AUX_TO_FAN = {
+    0x20: 4,
+    0x40: 2,
+    0x60: 1,
+    0xA0: 4,
+}
 
 
 class AuxMqttError(Exception):
@@ -42,6 +54,294 @@ class AuxMqttError(Exception):
 
 class AuxMqttAuthError(AuxMqttError):
     """Raised when the AUX MQTT broker rejects the login token."""
+
+
+class AuxMqttClient:
+    """Maintain a live AUX MQTT subscription for one account/device."""
+
+    def __init__(
+        self,
+        *,
+        uid: str,
+        token: str,
+        device_id: str,
+        app_id: str,
+        timeout: float = 12,
+        on_update: Callable[[dict[str, object], dict[str, float]], None] | None = None,
+    ) -> None:
+        self.uid = uid
+        self.token = token
+        self.device_id = device_id
+        self.app_id = app_id
+        self.timeout = timeout
+        self.on_update = on_update
+        self.client_id = f"usr{uid}_ha_{device_id[-6:]}"
+
+        self._condition = threading.Condition(threading.RLock())
+        self._send_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._connected_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._socket: ssl.SSLSocket | None = None
+        self._sequence = 100
+        self._small_body: bytes | None = None
+        self._state: dict[str, object] = {}
+        self._temperatures: dict[str, float] = {}
+        self._small_generation = 0
+        self._big_generation = 0
+        self._ack_generation = 0
+        self._last_state_at = 0.0
+        self._last_error: AuxMqttError | None = None
+        self._auth_error: AuxMqttAuthError | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self._connected_event.is_set()
+
+    @property
+    def last_state_at(self) -> float:
+        with self._condition:
+            return self._last_state_at
+
+    def start(self) -> None:
+        with self._condition:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name=f"aux-mqtt-{self.device_id[-6:]}",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def close(self) -> None:
+        self._stop_event.set()
+        with self._condition:
+            sock = self._socket
+            self._socket = None
+            self._condition.notify_all()
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=3)
+        self._connected_event.clear()
+
+    def snapshot(self) -> tuple[dict[str, object], dict[str, float]]:
+        with self._condition:
+            return dict(self._state), dict(self._temperatures)
+
+    def request_status(self, *, wait: bool = True) -> tuple[dict[str, object], dict[str, float]]:
+        self.start()
+        self._wait_connected()
+        with self._condition:
+            small_generation = self._small_generation
+            big_generation = self._big_generation
+            had_temperatures = bool(self._temperatures)
+        self._publish_inner(_inner_command(_SMALL_STATUS_QUERY_BODY))
+        self._publish_inner(_BIG_STATUS_QUERY)
+        if wait:
+            deadline = time.monotonic() + self.timeout
+            with self._condition:
+                while (
+                    self._small_generation == small_generation
+                    or (
+                        not had_temperatures
+                        and self._big_generation == big_generation
+                    )
+                ):
+                    self._raise_if_unavailable()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AuxMqttError("AUX MQTT small status query timed out")
+                    self._condition.wait(remaining)
+        return self.snapshot()
+
+    def control(self, intent: dict[str, object]) -> dict[str, object]:
+        self.start()
+        self._wait_connected()
+        if self._small_body is None or time.monotonic() - self.last_state_at > 10:
+            self.request_status(wait=True)
+
+        with self._condition:
+            current = self._small_body
+            ack_generation = self._ack_generation
+        if current is None:
+            raise AuxMqttError("AUX MQTT has no small status state")
+
+        control_body = _apply_control_intent(current, intent)
+        if control_body[2:] == current[2:]:
+            return dict(self._state)
+
+        self._publish_inner(_inner_command(control_body))
+        deadline = time.monotonic() + self.timeout
+        with self._condition:
+            while self._ack_generation == ack_generation:
+                self._raise_if_unavailable()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AuxMqttError("AUX MQTT control acknowledgement timed out")
+                self._condition.wait(remaining)
+
+            confirmed = bytearray(control_body)
+            confirmed[1] = 0x11
+            self._small_body = bytes(confirmed)
+            self._state = _decode_small_state(self._small_body)
+            self._last_state_at = time.monotonic()
+            state = dict(self._state)
+            temperatures = dict(self._temperatures)
+        self._notify_update(state, temperatures)
+        return state
+
+    def _run(self) -> None:
+        delay = 1.0
+        while not self._stop_event.is_set():
+            try:
+                self._listen_once()
+                delay = 1.0
+            except AuxMqttAuthError as err:
+                with self._condition:
+                    self._auth_error = err
+                    self._last_error = err
+                    self._condition.notify_all()
+                delay = 10.0
+            except (AuxMqttError, OSError, ssl.SSLError, TimeoutError) as err:
+                mqtt_error = err if isinstance(err, AuxMqttError) else AuxMqttError(str(err))
+                with self._condition:
+                    self._last_error = mqtt_error
+                    self._condition.notify_all()
+                _LOGGER.debug("AUX MQTT connection lost: %s", err)
+            finally:
+                self._connected_event.clear()
+                with self._condition:
+                    sock = self._socket
+                    self._socket = None
+                    self._condition.notify_all()
+                if sock is not None:
+                    sock.close()
+            self._stop_event.wait(delay)
+            delay = min(delay * 2, 30.0)
+
+    def _listen_once(self) -> None:
+        context = _mqtt_ssl_context()
+        raw_socket = socket.create_connection(
+            (MQTT_HOST, MQTT_PORT), timeout=self.timeout
+        )
+        try:
+            mqtt_socket = context.wrap_socket(raw_socket, server_hostname=MQTT_HOST)
+        except Exception:
+            raw_socket.close()
+            raise
+        try:
+            _verify_server_certificate(mqtt_socket)
+            mqtt_socket.settimeout(5)
+            _mqtt_connect(
+                mqtt_socket,
+                uid=self.uid,
+                token=self.token,
+                app_id=self.app_id,
+                client_id=self.client_id,
+            )
+            _mqtt_subscribe(mqtt_socket, f"dev2app/{self.uid}/#")
+        except Exception:
+            mqtt_socket.close()
+            raise
+        with self._condition:
+            self._socket = mqtt_socket
+            self._last_error = None
+            self._auth_error = None
+            self._connected_event.set()
+            self._condition.notify_all()
+
+        self._publish_inner(_inner_command(_SMALL_STATUS_QUERY_BODY))
+        self._publish_inner(_BIG_STATUS_QUERY)
+        last_packet_at = time.monotonic()
+        while not self._stop_event.is_set():
+            try:
+                packet_type, flags, data = _mqtt_receive(mqtt_socket)
+            except (socket.timeout, TimeoutError):
+                if time.monotonic() - last_packet_at >= 55:
+                    with self._send_lock:
+                        mqtt_socket.sendall(b"\xC0\x00")
+                    last_packet_at = time.monotonic()
+                continue
+            last_packet_at = time.monotonic()
+            if packet_type == 3:
+                topic, payload = _mqtt_publish(flags, data)
+                if topic == f"dev2app/{self.device_id}/#":
+                    self._process_publish(payload)
+
+    def _process_publish(self, payload: bytes) -> None:
+        inner = _auxlink_inner(payload)
+        if inner is None or len(inner) < 12:
+            return
+        body_length = inner[6]
+        body = inner[8:8 + body_length]
+        if len(body) < 2:
+            return
+
+        notify = False
+        with self._condition:
+            command = body[1]
+            if command == 0x11 and len(body) >= 15:
+                self._small_body = body[:15]
+                state = _decode_small_state(self._small_body)
+                notify = state != self._state
+                self._state = state
+                self._small_generation += 1
+                self._last_state_at = time.monotonic()
+            elif command in (0x21, 0x2C) and len(body) >= 24:
+                temperatures = _decode_big_body(body)
+                notify = temperatures != self._temperatures
+                self._temperatures = temperatures
+                self._big_generation += 1
+            elif command == 0x01:
+                self._ack_generation += 1
+            state = dict(self._state)
+            temperatures = dict(self._temperatures)
+            self._condition.notify_all()
+        if notify:
+            self._notify_update(state, temperatures)
+
+    def _publish_inner(self, inner: bytes) -> None:
+        self._wait_connected()
+        with self._condition:
+            sock = self._socket
+            self._sequence = (self._sequence + 1) & 0xFFFF
+            sequence = self._sequence
+        if sock is None:
+            raise AuxMqttError("AUX MQTT is disconnected")
+        with self._send_lock:
+            _publish_aux(sock, self.device_id, sequence, inner)
+
+    def _wait_connected(self) -> None:
+        deadline = time.monotonic() + self.timeout
+        while not self._connected_event.wait(0.2):
+            with self._condition:
+                self._raise_if_unavailable()
+            if time.monotonic() >= deadline:
+                raise AuxMqttError("AUX MQTT connection timed out")
+
+    def _raise_if_unavailable(self) -> None:
+        if self._auth_error is not None:
+            raise self._auth_error
+        if self._stop_event.is_set():
+            raise AuxMqttError("AUX MQTT client is stopped")
+
+    def _notify_update(
+        self, state: dict[str, object], temperatures: dict[str, float]
+    ) -> None:
+        if self.on_update is None:
+            return
+        try:
+            self.on_update(state, temperatures)
+        except Exception:  # noqa: BLE001 - callbacks must not kill the MQTT thread.
+            _LOGGER.exception("Unexpected AUX MQTT update callback error")
 
 
 def query_temperatures(
@@ -318,12 +618,19 @@ def _dns_name_matches(pattern: str, hostname: str) -> bool:
     return hostname.endswith(suffix) and hostname.count(".") == pattern.count(".")
 
 
-def _mqtt_connect(sock: ssl.SSLSocket, *, uid: str, token: str, app_id: str) -> None:
+def _mqtt_connect(
+    sock: ssl.SSLSocket,
+    *,
+    uid: str,
+    token: str,
+    app_id: str,
+    client_id: str | None = None,
+) -> None:
     connect_body = (
         _mqtt_utf8("MQIsdp")
         + bytes((3, 0xC2))
         + struct.pack("!H", MQTT_KEEP_ALIVE)
-        + _mqtt_utf8(f"usr{uid}")
+        + _mqtt_utf8(client_id or f"usr{uid}")
         + _mqtt_utf8(f"2${app_id}${uid}")
         + _mqtt_utf8(token)
     )
@@ -373,15 +680,21 @@ def _receive_exact(sock: ssl.SSLSocket, length: int) -> bytes:
 
 
 def _mqtt_publish_payload(flags: int, data: bytes) -> bytes:
+    _topic, payload = _mqtt_publish(flags, data)
+    return payload
+
+
+def _mqtt_publish(flags: int, data: bytes) -> tuple[str, bytes]:
     if len(data) < 2:
         raise AuxMqttError("Truncated MQTT PUBLISH packet")
     topic_length = struct.unpack("!H", data[:2])[0]
     position = 2 + topic_length
     if position > len(data):
         raise AuxMqttError("Truncated MQTT PUBLISH topic")
+    topic = data[2:position].decode("utf-8", errors="replace")
     if (flags >> 1) & 0x03:
         position += 2
-    return data[position:]
+    return topic, data[position:]
 
 
 def _mqtt_utf8(value: str) -> bytes:
@@ -453,9 +766,40 @@ def _decode_temperatures(payload: bytes) -> dict[str, float] | None:
     if len(body) < 24 or body[1] not in (0x21, 0x2C):
         return None
 
+    return _decode_big_body(body)
+
+
+def _decode_big_body(body: bytes) -> dict[str, float]:
     return {
         "indoor_temperature": body[7] - 0x20 + (body[23] & 0x0F) / 10.0,
         "outdoor_temperature": float(body[12] - 0x20),
+    }
+
+
+def _decode_small_state(body: bytes) -> dict[str, object]:
+    fraction = body[14] if body[14] <= 9 else 0
+    if fraction == 0 and body[4] & 0x80:
+        fraction = 5
+    fan_flags = body[6] & 0xC0
+    if fan_flags & 0x80:
+        fan = 0
+    elif fan_flags & 0x40:
+        fan = 5
+    else:
+        fan = _AUX_TO_FAN.get(body[5] & 0xE0, 4)
+
+    return {
+        "temperature": 8 + (body[2] >> 3),
+        "half": 1 if fraction == 5 else 0,
+        "temperature_decimal": fraction,
+        "up_down_swing": body[2] & 0x07,
+        "left_right_swing": 0 if body[3] & 0xE0 == 0 else 7,
+        "wind_speed": fan,
+        "wind_speed_1": fan,
+        "air_con_func": _AUX_TO_MODE.get(body[7] & 0xE0, 1),
+        "sleep_mode": 1 if body[7] & 0x04 else 0,
+        "on_off": 1 if body[10] & 0x20 else 0,
+        "screen_on_off": 1 if body[12] & 0x10 else 0,
     }
 
 

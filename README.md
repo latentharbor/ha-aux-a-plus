@@ -20,7 +20,8 @@ This integration was built for newer AUX A+ modules that use:
 - Up/down swing modes
 - Low-latency AUXLink MQTT control with automatic HTTP fallback
 - Optimistic state reconciliation to prevent stale cloud status rollbacks
-- Cloud polling through the AUX A+ HTTP and MQTT APIs
+- Persistent MQTT state subscription for immediate remote and app updates
+- Persistent MQTT cloud push with HTTP polling only for energy data
 
 ## Installation with HACS custom repository
 
