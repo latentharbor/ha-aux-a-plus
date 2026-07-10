@@ -17,6 +17,7 @@ This integration was built for newer AUX A+ modules that use:
 - Target temperature
 - Real indoor temperature from the air conditioner's AUXLink status packet
 - Separate Home Assistant indoor temperature sensor entity
+- Daily runtime, daily energy, and persistent cumulative energy sensors
 - Fan modes: quiet, low, medium, high, turbo
 - Up/down and left/right swing modes
 - Direct encrypted AUXLink LAN state and control
@@ -24,6 +25,10 @@ This integration was built for newer AUX A+ modules that use:
 - Optimistic state reconciliation to prevent stale cloud status rollbacks
 - Persistent LAN or MQTT state connection for immediate updates
 - HTTP polling only for authentication, metadata, and energy data
+
+The cumulative energy sensor is suitable for Home Assistant's Energy dashboard
+and Matter energy reporting because it does not reset when the daily AUX counter
+returns to zero at midnight.
 
 ## Installation with HACS custom repository
 

@@ -17,6 +17,7 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import callback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .api import AuxAPlusApi, AuxAPlusApiError
 from .const import (
@@ -40,6 +41,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             AuxAPlusTemperatureSensor(api, name, data[CONF_DEVICE_ID]),
             AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_runtime"),
             AuxAPlusDailySensor(api, name, data[CONF_DEVICE_ID], "today_energy"),
+            AuxAPlusTotalEnergySensor(api, name, data[CONF_DEVICE_ID]),
         ],
         True,
     )
@@ -171,6 +173,106 @@ class AuxAPlusDailySensor(SensorEntity):
     @staticmethod
     def _as_float(value: Any) -> float | None:
         if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+
+class AuxAPlusTotalEnergySensor(SensorEntity, RestoreEntity):
+    """Accumulate the daily energy counter into a persistent total."""
+
+    _attr_has_entity_name = True
+    _attr_name = "累计耗电量"
+    _attr_suggested_object_id = "aux_total_energy"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, api: AuxAPlusApi, name: str, device_id: str) -> None:
+        self.api = api
+        self._attr_unique_id = f"aux_a_plus_{device_id}_total_energy"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"aux_a_plus_{device_id}")},
+            "name": name,
+            "manufacturer": "AUX / 奥克斯",
+        }
+        self._available = False
+        self._value: float | None = None
+        self._last_daily_energy: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the accumulated total and the last daily counter."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return
+
+        self._value = self._as_float(
+            last_state.attributes.get("accumulated_energy", last_state.state)
+        )
+        self._last_daily_energy = self._as_float(
+            last_state.attributes.get("source_daily_energy")
+        )
+
+    @property
+    def available(self) -> bool:
+        return self._available and self._value is not None
+
+    @property
+    def native_value(self) -> float | None:
+        return self._value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "accumulated_energy": self._value,
+            "source_daily_energy": self._last_daily_energy,
+        }
+
+    def update(self) -> None:
+        try:
+            daily = self.api.get_daily_electricity()
+            current_daily = self._as_float(daily.get("todayElectricityConsumption"))
+            if current_daily is None:
+                self._available = False
+                return
+
+            self._value, self._last_daily_energy = self._accumulate(
+                self._value,
+                self._last_daily_energy,
+                current_daily,
+            )
+            self._available = True
+        except AuxAPlusApiError as err:
+            self._available = False
+            _LOGGER.warning("AUX A+ total energy sensor update failed: %s", err)
+        except Exception as err:  # noqa: BLE001
+            self._available = False
+            _LOGGER.exception(
+                "Unexpected AUX A+ total energy sensor update error: %s", err
+            )
+
+    @staticmethod
+    def _accumulate(
+        total: float | None,
+        previous_daily: float | None,
+        current_daily: float,
+    ) -> tuple[float, float]:
+        """Return a cumulative total from the API's daily-resetting counter."""
+        if total is None or previous_daily is None:
+            return current_daily, current_daily
+
+        if current_daily >= previous_daily:
+            return round(total + (current_daily - previous_daily), 6), current_daily
+
+        # The daily counter reset at midnight. Include today's current value.
+        return round(total + current_daily, 6), current_daily
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        if value in (None, "", "unknown", "unavailable"):
             return None
         try:
             return float(value)
