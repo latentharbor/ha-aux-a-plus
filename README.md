@@ -19,6 +19,7 @@ This integration was built for newer AUX A+ modules that use:
 - Fan modes: low, medium, high, quiet, auto, turbo, medium low, medium high
 - Up/down swing modes
 - Low-latency AUXLink MQTT control with automatic HTTP fallback
+- Optimistic state reconciliation to prevent stale cloud status rollbacks
 - Cloud polling through the AUX A+ HTTP and MQTT APIs
 
 ## Installation with HACS custom repository

@@ -16,6 +16,9 @@ from .mqtt import AuxMqttAuthError, AuxMqttError, control_device, query_temperat
 
 _LOGGER = logging.getLogger(__name__)
 
+CONTROL_STATE_GRACE_SECONDS = 90
+CONTROL_DEDUP_SECONDS = 3
+
 
 class AuxAPlusApiError(Exception):
     """Raised when AUX A+ API returns an error."""
@@ -54,6 +57,10 @@ class AuxAPlusApi:
         self._cached_temperatures: dict[str, float] | None = None
         self._temperature_cache_at = 0.0
         self._mqtt_sequence = 0
+        self._pending_control_state: dict[str, Any] = {}
+        self._pending_control_until = 0.0
+        self._last_control_intent: dict[str, Any] | None = None
+        self._last_control_at = 0.0
 
     def _now_ms(self) -> str:
         return str(int(time.time() * 1000))
@@ -165,6 +172,7 @@ class AuxAPlusApi:
             try:
                 for device in self.list_devices():
                     if device.get("deviceId") == self.device_id or device.get("did") == self.device_id:
+                        self._merge_pending_control_state(device, now)
                         self._cached_device = device
                         self._device_cache_at = now
                         self._force_device_refresh = False
@@ -180,6 +188,17 @@ class AuxAPlusApi:
 
     def control(self, intent: dict[str, Any], *, v2: bool = False) -> dict[str, Any]:
         with self._request_lock:
+            now = time.monotonic()
+            if self._intent_matches_cached_state(intent):
+                return {"code": 200, "message": "Control state already applied"}
+            if (
+                self._last_control_intent == intent
+                and now - self._last_control_at < CONTROL_DEDUP_SECONDS
+            ):
+                self._record_control_state(intent, now)
+                self._last_control_at = now
+                return {"code": 200, "message": "Duplicate control suppressed"}
+
             try:
                 result = self._control_mqtt(intent)
             except AuxMqttError as err:
@@ -196,8 +215,114 @@ class AuxAPlusApi:
                     result = self._control(remaining, v2=False)
                 else:
                     result = self._control(intent, v2=v2)
-            self._force_device_refresh = True
+            self._record_control_state(intent, now)
+            self._last_control_intent = dict(intent)
+            self._last_control_at = now
             return result
+
+    def _record_control_state(self, intent: dict[str, Any], now: float) -> None:
+        state = self._state_from_intent(intent)
+        self._pending_control_state.update(state)
+        self._pending_control_until = now + CONTROL_STATE_GRACE_SECONDS
+        self._force_device_refresh = False
+        self._device_last_attempt_at = now
+
+        if self._cached_device is not None:
+            cached_state = self._cached_device.get("data")
+            if not isinstance(cached_state, dict):
+                cached_state = {}
+            self._cached_device["data"] = cached_state
+            cached_state.update(state)
+            self._device_cache_at = now
+
+    def _intent_matches_cached_state(self, intent: dict[str, Any]) -> bool:
+        if self._cached_device is None:
+            return False
+        state = self._cached_device.get("data")
+        if not isinstance(state, dict):
+            return False
+
+        for key in ("on_off", "air_con_func", "up_down_swing", "left_right_swing"):
+            if key in intent and not self._state_values_equal(
+                state.get(key), intent[key]
+            ):
+                return False
+
+        if "wind_speed" in intent:
+            current_fan = state.get("wind_speed_1", state.get("wind_speed"))
+            if not self._state_values_equal(current_fan, intent["wind_speed"]):
+                return False
+
+        if "temperature" in intent:
+            whole = state.get("temperature")
+            if whole in (None, ""):
+                return False
+            try:
+                fraction = 0.5 if int(state.get("half", 0) or 0) == 1 else 0.0
+                if not fraction:
+                    fraction = float(state.get("temperature_decimal", 0) or 0) / 10.0
+                current_target = float(whole) + fraction
+                requested_target = float(intent["temperature"]) / 10.0
+            except (TypeError, ValueError):
+                return False
+            if current_target != requested_target:
+                return False
+
+        return True
+
+    def _merge_pending_control_state(
+        self, device: dict[str, Any], now: float
+    ) -> None:
+        if not self._pending_control_state:
+            return
+        if now >= self._pending_control_until:
+            self._pending_control_state.clear()
+            return
+
+        state = device.get("data")
+        if not isinstance(state, dict):
+            state = {}
+            device["data"] = state
+
+        confirmed: list[str] = []
+        for key, expected in self._pending_control_state.items():
+            if self._state_values_equal(state.get(key), expected):
+                confirmed.append(key)
+            else:
+                state[key] = expected
+        for key in confirmed:
+            self._pending_control_state.pop(key, None)
+        if not self._pending_control_state:
+            self._pending_control_until = 0.0
+
+    @staticmethod
+    def _state_from_intent(intent: dict[str, Any]) -> dict[str, Any]:
+        state: dict[str, Any] = {}
+        for key in ("on_off", "air_con_func", "up_down_swing", "left_right_swing"):
+            if key in intent:
+                state[key] = int(intent[key])
+
+        if "wind_speed" in intent:
+            state["wind_speed"] = int(intent["wind_speed"])
+            state["wind_speed_1"] = int(intent["wind_speed"])
+
+        if "temperature" in intent:
+            target = float(intent["temperature"]) / 10.0
+            whole = int(target)
+            fraction = int(round((target - whole) * 10))
+            state["temperature"] = whole
+            state["half"] = 1 if fraction == 5 else 0
+            state["temperature_decimal"] = fraction
+        return state
+
+    @staticmethod
+    def _state_values_equal(actual: Any, expected: Any) -> bool:
+        if actual in (None, ""):
+            return False
+        try:
+            return float(actual) == float(expected)
+        except (TypeError, ValueError):
+            return actual == expected
 
     def _control_mqtt(self, intent: dict[str, Any]) -> dict[str, Any]:
         self.ensure_login()
