@@ -91,6 +91,35 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         hass.config_entries.async_update_entry(entry, version=4)
 
+    if entry.version < 5:
+        sensor_entity_ids = {
+            f"aux_a_plus_{device_id}_indoor_temperature": (
+                "sensor.aux_indoor_temperature"
+            ),
+            f"aux_a_plus_{device_id}_today_runtime": "sensor.aux_today_runtime",
+            f"aux_a_plus_{device_id}_today_energy": "sensor.aux_today_energy",
+            f"aux_a_plus_{device_id}_total_energy": "sensor.aux_total_energy",
+        }
+
+        for unique_id, target_entity_id in sensor_entity_ids.items():
+            current_entity_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, unique_id
+            )
+            if current_entity_id is None or current_entity_id == target_entity_id:
+                continue
+            if registry.async_get(target_entity_id) is not None:
+                _LOGGER.warning(
+                    "Cannot rename %s to %s because the target entity ID already exists",
+                    current_entity_id,
+                    target_entity_id,
+                )
+                continue
+            registry.async_update_entity(
+                current_entity_id, new_entity_id=target_entity_id
+            )
+
+        hass.config_entries.async_update_entry(entry, version=5)
+
     return True
 
 

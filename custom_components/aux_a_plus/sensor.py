@@ -50,7 +50,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class AuxAPlusTemperatureSensor(SensorEntity):
     """Expose the indoor temperature reported by the air conditioner."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "室内温度"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -115,7 +115,7 @@ class AuxAPlusTemperatureSensor(SensorEntity):
 class AuxAPlusDailySensor(SensorEntity):
     """Expose daily AUX A+ usage values."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
 
     def __init__(self, api: AuxAPlusApi, name: str, device_id: str, kind: str) -> None:
         self.api = api
@@ -183,7 +183,7 @@ class AuxAPlusDailySensor(SensorEntity):
 class AuxAPlusTotalEnergySensor(SensorEntity, RestoreEntity):
     """Accumulate the daily energy counter into a persistent total."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "累计耗电量"
     _attr_suggested_object_id = "aux_total_energy"
     _attr_device_class = SensorDeviceClass.ENERGY
