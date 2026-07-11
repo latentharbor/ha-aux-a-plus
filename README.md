@@ -77,6 +77,10 @@ README.md
 
 ## Debug logging
 
+For confirmed protocol findings, packet-capture procedures, Matter/iOS notes,
+and a repeatable troubleshooting checklist, see
+[`docs/RESEARCH_PLAYBOOK.md`](docs/RESEARCH_PLAYBOOK.md).
+
 Add this to `configuration.yaml` if you need debug logs:
 
 ```yaml
